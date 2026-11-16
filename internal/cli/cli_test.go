@@ -3,6 +3,8 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"io"
@@ -20,9 +22,11 @@ import (
 	"github.com/mycophonic/primordium/network"
 
 	"github.com/duncanite/go-arris/sb8200/sb8200test"
+	"github.com/duncanite/go-unifi/console/consoletest"
 
 	"github.com/duncanite/collector/internal/cli"
 	"github.com/duncanite/collector/internal/plugins/arris"
+	"github.com/duncanite/collector/internal/plugins/unifi"
 	"github.com/duncanite/collector/internal/plugins/unifisyslog"
 )
 
@@ -120,7 +124,7 @@ func start(t *testing.T, args ...string) *collector {
 	ctx, cancel := context.WithCancel(t.Context())
 	col := &collector{cancel: cancel, done: make(chan int, 1), stderr: &bytes.Buffer{}}
 
-	go func() { col.done <- cli.Run(ctx, args, col.stderr, arris.New(), unifisyslog.New()) }()
+	go func() { col.done <- cli.Run(ctx, args, col.stderr, arris.New(), unifi.New(), unifisyslog.New()) }()
 
 	t.Cleanup(cancel)
 
@@ -527,5 +531,187 @@ func TestWhatADeploymentGetsWrongForSyslog(t *testing.T) {
 		if code != cli.ExitError || !strings.Contains(stderr, test.says) {
 			t.Errorf("%s: exit = %d, want %d and %q:\n%s", name, code, cli.ExitError, test.says, stderr)
 		}
+	}
+}
+
+// unifiConsole is a console holding the devices of testdata, and the
+// arguments that point the collector at it.
+func unifiConsole(t *testing.T, st *store) []string {
+	t.Helper()
+
+	data, err := xos.ReadFile(filepath.Join("testdata", "unifi-devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var devices []map[string]any
+	if err := json.Unmarshal(data, &devices); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := consoletest.New(map[string][]map[string]any{"device": devices})
+	t.Cleanup(fake.Close)
+
+	pin := sha256.Sum256(fake.Certificate().Raw)
+
+	return []string{
+		"--enable", "unifi",
+		"--metrics-url", st.server.URL,
+		"--unifi.url", fake.URL,
+		"--unifi.fingerprint", hex.EncodeToString(pin[:]),
+		"--unifi.interval", "1h",
+	}
+}
+
+func TestTheConsolesDevicesReachTheMetricsStore(t *testing.T) {
+	t.Setenv("UNIFI_API_KEY", consoletest.APIKey)
+
+	st := newStore(t, 0)
+
+	col := start(t, unifiConsole(t, st)...)
+	got := st.next(t)
+
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+
+	golden := filepath.Join("testdata", "unifi.golden")
+	sent := untimed(t, got.body)
+
+	if *update {
+		if err := xos.WriteFile(golden, []byte(sent), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	want, err := xos.ReadFile(golden)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sent != string(want) {
+		t.Errorf("the metrics store was sent:\n%s\nwant, from %s:\n%s", sent, golden, want)
+	}
+}
+
+func TestAConsoleThatRefusesIsWrittenAsDown(t *testing.T) {
+	t.Setenv("UNIFI_API_KEY", "not the key")
+
+	st := newStore(t, 0)
+
+	col := start(t, unifiConsole(t, st)...)
+
+	if got := untimed(t, st.next(t).body); got != "unifi_up{job=\"unifi\"} 0\n" {
+		t.Errorf("the metrics store was sent:\n%s", got)
+	}
+
+	// The collector goes on: a console that refuses is not a reason to stop.
+	select {
+	case code := <-col.done:
+		t.Fatalf("the collector ended, exit %d:\n%s", code, col.stderr.String())
+	default:
+	}
+
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+}
+
+func TestACertificateThatIsNotThePinnedOneIsWrittenAsDown(t *testing.T) {
+	t.Setenv("UNIFI_API_KEY", consoletest.APIKey)
+
+	st := newStore(t, 0)
+	args := unifiConsole(t, st)
+
+	for index, arg := range args {
+		if arg == "--unifi.fingerprint" {
+			args[index+1] = strings.Repeat("00", sha256.Size)
+		}
+	}
+
+	col := start(t, args...)
+
+	if got := untimed(t, st.next(t).body); got != "unifi_up{job=\"unifi\"} 0\n" {
+		t.Errorf("the metrics store was sent:\n%s", got)
+	}
+
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+}
+
+func TestWhatADeploymentGetsWrongForTheConsole(t *testing.T) {
+	t.Setenv("UNIFI_API_KEY", consoletest.APIKey)
+
+	st := newStore(t, 0)
+	whole := unifiConsole(t, st)
+
+	// A console answering in the clear: asked anything, the key has left.
+	asked := make(chan string, 1)
+	plain := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case asked <- r.Header.Get("X-Api-Key"):
+		default:
+		}
+	}))
+	t.Cleanup(plain.Close)
+
+	// without is the whole command line less one flag and its value.
+	without := func(dropped string) []string {
+		var args []string
+
+		for index := 0; index < len(whole); index += 2 {
+			if whole[index] != dropped {
+				args = append(args, whole[index], whole[index+1])
+			}
+		}
+
+		return args
+	}
+
+	for name, test := range map[string]struct {
+		key  string
+		args []string
+		says string
+	}{
+		"no metrics store": {consoletest.APIKey, without("--metrics-url"), "unifi: it writes metrics and --metrics-url is empty"},
+		"no address":       {consoletest.APIKey, without("--unifi.url"), "unifi: --unifi.url is empty"},
+		"an address in the clear": {
+			consoletest.APIKey, append(without("--unifi.url"), "--unifi.url", plain.URL),
+			"unifi: --unifi.url is not an https address",
+		},
+		"an address with no scheme": {
+			consoletest.APIKey, append(without("--unifi.url"), "--unifi.url", "console.example"),
+			"unifi: --unifi.url is not an https address",
+		},
+		"no fingerprint": {consoletest.APIKey, without("--unifi.fingerprint"), "unifi: --unifi.fingerprint is empty"},
+		"no key":         {"", whole, "unifi: UNIFI_API_KEY is empty"},
+		"no interval": {
+			consoletest.APIKey, append(without("--unifi.interval"), "--unifi.interval", "0s"),
+			"unifi: --unifi.interval is not above zero",
+		},
+		"a fingerprint that is none": {
+			consoletest.APIKey, append(without("--unifi.fingerprint"), "--unifi.fingerprint", "zz"),
+			"unifi: --unifi.fingerprint:",
+		},
+	} {
+		t.Setenv("UNIFI_API_KEY", test.key)
+
+		code, stderr := start(t, test.args...).wait(t)
+		if code != cli.ExitError || !strings.Contains(stderr, test.says) {
+			t.Errorf("%s: exit = %d, want %d and %q:\n%s", name, code, cli.ExitError, test.says, stderr)
+		}
+	}
+
+	select {
+	case got := <-st.writes:
+		t.Errorf("a deployment that was refused wrote:\n%s", got.body)
+	default:
+	}
+
+	select {
+	case key := <-asked:
+		t.Errorf("an address in the clear was sent a request, with the key %q", key)
+	default:
 	}
 }

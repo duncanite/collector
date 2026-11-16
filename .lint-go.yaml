@@ -85,6 +85,7 @@ golangci:
               - github.com/mycophonic/primordium
               - github.com/forkcloser/xos
               - github.com/duncanite/go-arris
+              - github.com/duncanite/go-unifi
 commands:
   unshipped:
     # No release yet: the image that will carry it is not built here so far.
