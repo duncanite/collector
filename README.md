@@ -27,7 +27,7 @@ each its settings through that plugin's flags. Nothing here names a host or an a
 ARRIS_PASSWORD=… collector \
     --enable arris \
     --metrics-url http://<victoriametrics>:8428 \
-    --arris.url https://<modem> \
+    --arris.host <modem> \
     --arris.fingerprint <sha-256 of the modem's certificate, hex>
 ```
 
