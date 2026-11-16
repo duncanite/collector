@@ -67,6 +67,13 @@
 #                                    #   limen's workflows rule, nothing for golangci-lint
 golangci:
   linters:
+    exclusions:
+      rules:
+        # The gateway writes its own name twice at the head of a line, and
+        # the tests hold such lines.
+        - path: _test\.go
+          linters:
+            - dupword
     settings:
       depguard:
         rules:

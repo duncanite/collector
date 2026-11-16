@@ -3,10 +3,13 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,6 +23,7 @@ import (
 
 	"github.com/duncanite/collector/internal/cli"
 	"github.com/duncanite/collector/internal/plugins/arris"
+	"github.com/duncanite/collector/internal/plugins/unifisyslog"
 )
 
 // patience bounds every wait on the collector.
@@ -36,10 +40,11 @@ func TestMain(m *testing.M) {
 	m.Run()
 }
 
-// write is one request the metrics store received.
+// write is one request a store received.
 type write struct {
-	path string
-	body string
+	path  string
+	query string
+	body  string
 }
 
 // store stands for VictoriaMetrics: it keeps the writes it is sent, and
@@ -81,7 +86,7 @@ func newStore(t *testing.T, refuse int) *store {
 			w.WriteHeader(http.StatusNoContent)
 		}
 
-		st.writes <- write{path: r.URL.Path, body: string(body)}
+		st.writes <- write{path: r.URL.Path, query: r.URL.RawQuery, body: string(body)}
 	}))
 	t.Cleanup(st.server.Close)
 
@@ -115,7 +120,7 @@ func start(t *testing.T, args ...string) *collector {
 	ctx, cancel := context.WithCancel(t.Context())
 	col := &collector{cancel: cancel, done: make(chan int, 1), stderr: &bytes.Buffer{}}
 
-	go func() { col.done <- cli.Run(ctx, args, col.stderr, arris.New()) }()
+	go func() { col.done <- cli.Run(ctx, args, col.stderr, arris.New(), unifisyslog.New()) }()
 
 	t.Cleanup(cancel)
 
@@ -331,7 +336,7 @@ func TestWhatADeploymentGetsWrong(t *testing.T) {
 	}{
 		"nothing enabled":      {without("--enable"), sb8200test.Password, cli.ExitUsage, "no plugin is enabled"},
 		"an unknown plugin":    {append(without("--enable"), "--enable", "arris,toaster"), sb8200test.Password, cli.ExitUsage, `no such plugin: "toaster"`},
-		"no metrics store":     {without("--metrics-url"), sb8200test.Password, cli.ExitUsage, "--metrics-url is empty"},
+		"no metrics store":     {without("--metrics-url"), sb8200test.Password, cli.ExitError, "arris: it writes metrics and --metrics-url is empty"},
 		"a store with no host": {append(without("--metrics-url"), "--metrics-url", "nowhere"), sb8200test.Password, cli.ExitUsage, "no scheme or no host"},
 		"an unknown flag":      {append(args, "--arris.password", "x"), sb8200test.Password, cli.ExitUsage, "flag provided but not defined"},
 		"no modem address":     {without("--arris.url"), sb8200test.Password, cli.ExitError, "arris: --arris.url is empty"},
@@ -353,5 +358,174 @@ func TestWhatADeploymentGetsWrong(t *testing.T) {
 	case got := <-st.writes:
 		t.Errorf("a refused configuration wrote to the store: %q", got.body)
 	default:
+	}
+}
+
+// listening is a UDP address nothing listens on, for the collector to take.
+func listening(t *testing.T) string {
+	t.Helper()
+
+	var config net.ListenConfig
+
+	conn, err := config.ListenPacket(t.Context(), "udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	address := conn.LocalAddr().String()
+
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	return address
+}
+
+// send sends datagram to address until the store has a write, since
+// nothing says when the collector has begun to listen, and returns it.
+func send(t *testing.T, st *store, address, datagram string) write {
+	t.Helper()
+
+	var dialer net.Dialer
+
+	conn, err := dialer.DialContext(t.Context(), "udp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = conn.Close() }()
+
+	for deadline := time.Now().Add(patience); time.Now().Before(deadline); {
+		// A refusal is the port not open yet; the next try finds it.
+		_, _ = conn.Write([]byte(datagram))
+
+		select {
+		case got := <-st.writes:
+			return got
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	t.Fatal("no line reached the logs store")
+
+	return write{}
+}
+
+func TestUniFiSyslogReachesTheLogsStore(t *testing.T) {
+	t.Parallel()
+
+	st := newStore(t, 0)
+	address := listening(t)
+
+	col := start(t,
+		"--enable", "unifi-syslog",
+		"--logs-url", st.server.URL,
+		"--unifi-syslog.listen", address,
+		"--unifi-syslog.location", "America/Los_Angeles",
+	)
+
+	got := send(t, st, address, "<14>Nov 15 15:54:49 Gateway Gateway mcad[4588]: the text\n")
+
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+
+	query, err := url.ParseQuery(got.query)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.path != "/insert/jsonline" || query.Get("_stream_fields") != "job,host.name,service.name" ||
+		query.Get("_msg_field") != "_msg" || query.Get("_time_field") != "_time" {
+		t.Errorf("the write went to %q with %q", got.path, got.query)
+	}
+
+	var line map[string]string
+
+	if err = json.Unmarshal([]byte(strings.SplitN(got.body, "\n", 2)[0]), &line); err != nil {
+		t.Fatalf("the logs store was sent %q: %v", got.body, err)
+	}
+
+	for name, want := range map[string]string{
+		"_msg":                 "the text",
+		"job":                  "unifi-syslog",
+		"host.name":            "Gateway",
+		"service.name":         "mcad",
+		"process.pid":          "4588",
+		"severity_text":        "info",
+		"syslog.facility":      "user",
+		"network.peer.address": "127.0.0.1",
+	} {
+		if line[name] != want {
+			t.Errorf("%s is %q, want %q, in %q", name, line[name], want, got.body)
+		}
+	}
+
+	// The year is this one's: the line has none.
+	at, err := time.Parse(time.RFC3339Nano, line["_time"])
+	if err != nil || at.Month() != time.November || at.Day() != 15 || at.Hour() != 23 || at.Minute() != 54 {
+		t.Errorf("_time is %q: %v", line["_time"], err)
+	}
+}
+
+func TestALineTheStoreRefusesIsLost(t *testing.T) {
+	t.Parallel()
+
+	st := newStore(t, 1)
+	address := listening(t)
+
+	col := start(t,
+		"--enable", "unifi-syslog",
+		"--logs-url", st.server.URL,
+		"--unifi-syslog.listen", address,
+	)
+
+	// The first line the store sees is refused; the collector goes on to
+	// the next and does not send the first again.
+	first := send(t, st, address, "<14>Nov 15 15:54:49 Gateway Gateway mcad[1]: one\n")
+	second := send(t, st, address, "<14>Nov 15 15:54:50 Gateway Gateway mcad[1]: two\n")
+
+	if !strings.Contains(first.body, `"_msg":"one"`) || !strings.Contains(second.body, `"_msg":"`) {
+		t.Errorf("the store was sent %q then %q", first.body, second.body)
+	}
+
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+}
+
+func TestWhatADeploymentGetsWrongForSyslog(t *testing.T) {
+	t.Parallel()
+
+	st := newStore(t, 0)
+
+	for name, test := range map[string]struct {
+		args []string
+		says string
+	}{
+		"no logs store": {
+			[]string{"--enable", "unifi-syslog", "--unifi-syslog.listen", "127.0.0.1:0"},
+			"unifi-syslog: it writes logs and --logs-url is empty",
+		},
+		"no address": {
+			[]string{"--enable", "unifi-syslog", "--logs-url", st.server.URL},
+			"unifi-syslog: --unifi-syslog.listen is empty",
+		},
+		"a time zone that is none": {
+			[]string{
+				"--enable", "unifi-syslog", "--logs-url", st.server.URL,
+				"--unifi-syslog.listen", "127.0.0.1:0", "--unifi-syslog.location", "Mars/Olympus",
+			},
+			"unifi-syslog: --unifi-syslog.location:",
+		},
+		"an address that is none": {
+			[]string{"--enable", "unifi-syslog", "--logs-url", st.server.URL, "--unifi-syslog.listen", "nowhere"},
+			"unifi-syslog: --unifi-syslog.listen:",
+		},
+	} {
+		code, stderr := start(t, test.args...).wait(t)
+		if code != cli.ExitError || !strings.Contains(stderr, test.says) {
+			t.Errorf("%s: exit = %d, want %d and %q:\n%s", name, code, cli.ExitError, test.says, stderr)
+		}
 	}
 }

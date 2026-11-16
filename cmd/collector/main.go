@@ -14,6 +14,7 @@ import (
 	"github.com/duncanite/collector/internal/cli"
 	"github.com/duncanite/collector/internal/plugin"
 	"github.com/duncanite/collector/internal/plugins/arris"
+	"github.com/duncanite/collector/internal/plugins/unifisyslog"
 )
 
 func main() {
@@ -21,6 +22,7 @@ func main() {
 		// Every plugin this build holds. A new source is one more line.
 		plugins := []plugin.Plugin{
 			arris.New(),
+			unifisyslog.New(),
 		}
 
 		if code := cli.Run(ctx, os.Args[1:], os.Stderr, plugins...); code != cli.ExitOK {

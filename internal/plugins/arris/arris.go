@@ -37,6 +37,7 @@ var (
 	errNoFingerprint = errors.New("--arris.fingerprint is empty")
 	errNoPassword    = errors.New(passwordVar + " is empty")
 	errNoInterval    = errors.New("--arris.interval is not above zero")
+	errNoMetrics     = errors.New("it writes metrics and --metrics-url is empty")
 )
 
 // Plugin polls one modem.
@@ -70,6 +71,8 @@ func (p *Plugin) Run(ctx context.Context, out plugin.Output) error {
 	password := os.Getenv(passwordVar)
 
 	switch {
+	case out.Metrics == nil:
+		return errNoMetrics
 	case p.url == "":
 		return errNoURL
 	case p.fingerprint == "":
