@@ -1,0 +1,181 @@
+[
+  {
+    "_id": "000000000000000000000001",
+    "mac": "00:00:5e:00:53:01",
+    "name": "Gateway",
+    "version": "1.2.3.456",
+    "type": "udm",
+    "model": "UCGMAX",
+    "state": 1,
+    "uptime": 82282,
+    "num_sta": 50,
+    "guest-num_sta": 0,
+    "rx_bytes": 10875795935,
+    "tx_bytes": 113819381662,
+    "upgradable": false,
+    "system-stats": {
+      "cpu": "15.4",
+      "mem": "60.5"
+    },
+    "sys_stats": {
+      "loadavg_1": "1.82"
+    },
+    "temperatures": [
+      {
+        "name": "CPU",
+        "type": "cpu",
+        "value": 41.1
+      }
+    ],
+    "port_table": [
+      {
+        "port_idx": 2,
+        "up": true,
+        "speed": 1000,
+        "rx_bytes": 12647275282,
+        "tx_bytes": 116296708869,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 1,
+        "tx_dropped": 0,
+        "port_poe": false,
+        "poe_power": "0.00",
+        "name": "Port 2"
+      },
+      {
+        "port_idx": 5,
+        "up": true,
+        "speed": 1000,
+        "rx_bytes": 113819381662,
+        "tx_bytes": 10875795935,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0,
+        "port_poe": false,
+        "poe_power": "0.00",
+        "name": "Port 5"
+      }
+    ],
+    "wan1": {
+      "up": true,
+      "latency": 10,
+      "availability": 100,
+      "rx_bytes": 113819381662,
+      "tx_bytes": 10875795935,
+      "speed": 1000
+    }
+  },
+  {
+    "_id": "000000000000000000000002",
+    "mac": "00:00:5e:00:53:02",
+    "name": "Attic",
+    "version": "1.2.3.456",
+    "type": "uap",
+    "model": "U7NHD",
+    "state": 1,
+    "uptime": 611497,
+    "num_sta": 18,
+    "guest-num_sta": 0,
+    "satisfaction": 98,
+    "rx_bytes": 890353613,
+    "tx_bytes": 3236280539,
+    "upgradable": false,
+    "system-stats": {
+      "cpu": "2.8",
+      "mem": "40.9"
+    },
+    "sys_stats": {
+      "loadavg_1": "0.55"
+    },
+    "radio_table_stats": [
+      {
+        "radio": "ng",
+        "channel": 11,
+        "num_sta": 16,
+        "cu_total": 24,
+        "tx_power": 23,
+        "tx_retries_pct": 30.0,
+        "satisfaction": 98
+      },
+      {
+        "radio": "na",
+        "channel": 36,
+        "num_sta": 2,
+        "cu_total": 10,
+        "tx_power": 26,
+        "tx_retries_pct": 0.0,
+        "satisfaction": 100
+      }
+    ]
+  },
+  {
+    "_id": "000000000000000000000003",
+    "mac": "00:00:5e:00:53:03",
+    "name": "Switch",
+    "version": "1.2.3.456",
+    "type": "usw",
+    "model": "USL16P",
+    "state": 1,
+    "uptime": 611584,
+    "num_sta": 17,
+    "guest-num_sta": 0,
+    "satisfaction": 100,
+    "rx_bytes": 10300533182,
+    "tx_bytes": 107379713986,
+    "upgradable": false,
+    "total_used_power": 11.299999999999999,
+    "total_max_power": 42,
+    "system-stats": {
+      "cpu": "15.1",
+      "mem": "38.2"
+    },
+    "sys_stats": {
+      "loadavg_1": "0.77"
+    },
+    "port_table": [
+      {
+        "port_idx": 1,
+        "up": true,
+        "speed": 1000,
+        "rx_bytes": 28892001647,
+        "tx_bytes": 302893394841,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0,
+        "port_poe": true,
+        "poe_power": "4.95",
+        "name": "Port 1"
+      },
+      {
+        "port_idx": 3,
+        "up": true,
+        "speed": 1000,
+        "rx_bytes": 14298656344,
+        "tx_bytes": 90849900503,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0,
+        "port_poe": true,
+        "poe_power": "4.52",
+        "name": "Port 3"
+      },
+      {
+        "port_idx": 2,
+        "up": false,
+        "speed": 0,
+        "rx_bytes": 0,
+        "tx_bytes": 0,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+        "tx_dropped": 0,
+        "port_poe": true,
+        "poe_power": "0.00",
+        "name": "Port 2"
+      }
+    ]
+  }
+]
