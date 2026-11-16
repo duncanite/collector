@@ -2,6 +2,7 @@ package unifi
 
 import (
 	"encoding/json"
+	"math"
 	"strconv"
 	"time"
 
@@ -50,8 +51,24 @@ func samples(docs []console.Document, now time.Time) []plugin.Sample {
 	all := &series{now: now}
 	all.add("unifi_up", 1, nil)
 
+	// A console lets two devices carry one name; their series would be
+	// one series written twice.
+	named := make(map[string]int, len(docs))
 	for _, doc := range docs {
-		device(all, doc)
+		named[text(doc["name"])]++
+	}
+
+	for _, doc := range docs {
+		mac := text(doc["mac"])
+
+		called := text(doc["name"])
+		if called == "" || named[called] > 1 {
+			// A device nobody named, or named like another, is known by
+			// its address.
+			called = mac
+		}
+
+		device(all, doc, called, mac)
 	}
 
 	return all.out
@@ -60,15 +77,7 @@ func samples(docs []console.Document, now time.Time) []plugin.Sample {
 // device is one device's document: the gateway, a switch or an access
 // point. What only some of them have, radios, ports, an uplink to the
 // internet, is written for those that do.
-func device(all *series, doc map[string]any) {
-	mac := text(doc["mac"])
-
-	called := text(doc["name"])
-	if called == "" {
-		// A device nobody named is known by its address.
-		called = mac
-	}
-
+func device(all *series, doc map[string]any, called, mac string) {
 	labels := []plugin.Label{{Name: "device", Value: called}}
 
 	all.add("unifi_device_info", 1, []plugin.Label{
@@ -112,7 +121,11 @@ func device(all *series, doc map[string]any) {
 	}
 
 	for _, port := range objects(doc["port_table"]) {
-		index, _ := number(port["port_idx"])
+		index, numbered := number(port["port_idx"])
+		if !numbered {
+			// Nothing to tell it from the device's other ports by.
+			continue
+		}
 
 		ports(all, port, with(
 			with(labels, "port", strconv.FormatFloat(index, 'f', -1, 64)),
@@ -174,25 +187,31 @@ func with(labels []plugin.Label, name, value string) []plugin.Label {
 	return append(out, plugin.Label{Name: name, Value: value})
 }
 
-// number is the number in value. The console writes its numbers three
-// ways, sometimes on one document: as a number, as a number in a string
-// ("15.4"), and, read by a decoder that keeps them exact, as a
-// json.Number.
+// number is the number in value. The console writes its numbers two
+// ways, sometimes on one document: as a number, which go-unifi's decoder
+// hands over as a json.Number, and as a number in a string ("15.4"). What
+// is not a finite number is none: "NaN" and "Inf" parse, and are no
+// measurement.
 func number(value any) (float64, bool) {
+	var (
+		parsed float64
+		err    error
+	)
+
 	switch held := value.(type) {
 	case json.Number:
-		parsed, err := held.Float64()
-
-		return parsed, err == nil
-	case float64:
-		return held, true
+		parsed, err = held.Float64()
 	case string:
-		parsed, err := strconv.ParseFloat(held, 64)
-
-		return parsed, err == nil
+		parsed, err = strconv.ParseFloat(held, 64)
 	default:
 		return 0, false
 	}
+
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return 0, false
+	}
+
+	return parsed, true
 }
 
 // text is the string in value, or none.

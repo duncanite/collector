@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"time"
 
@@ -32,7 +33,10 @@ const keyVar = "UNIFI_API_KEY" // #nosec G101 -- the variable's name, not a cred
 const timeout = 30 * time.Second
 
 var (
-	errNoURL         = errors.New("--unifi.url is empty")
+	errNoURL    = errors.New("--unifi.url is empty")
+	errNotHTTPS = errors.New(
+		"--unifi.url is not an https address: the API key would cross the network in the clear",
+	)
 	errNoFingerprint = errors.New("--unifi.fingerprint is empty")
 	errNoKey         = errors.New(keyVar + " is empty")
 	errNoInterval    = errors.New("--unifi.interval is not above zero")
@@ -75,6 +79,8 @@ func (p *Plugin) Run(ctx context.Context, out plugin.Output) error {
 		return errNoMetrics
 	case p.url == "":
 		return errNoURL
+	case !encrypted(p.url):
+		return errNotHTTPS
 	case p.fingerprint == "":
 		return errNoFingerprint
 	case key == "":
@@ -110,6 +116,19 @@ func (p *Plugin) Run(ctx context.Context, out plugin.Output) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+// encrypted reports whether address is an https one. The key goes out in
+// a header of the first request, before any answer could say the console
+// is elsewhere, and the pinned certificate guards nothing on a connection
+// that has none.
+func encrypted(address string) bool {
+	parsed, err := url.Parse(address)
+	if err != nil || parsed == nil {
+		return false
+	}
+
+	return parsed.Scheme == "https" && parsed.Host != ""
 }
 
 // deviceList is the kind the console's library lists the devices by.

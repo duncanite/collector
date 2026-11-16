@@ -646,6 +646,16 @@ func TestWhatADeploymentGetsWrongForTheConsole(t *testing.T) {
 	st := newStore(t, 0)
 	whole := unifiConsole(t, st)
 
+	// A console answering in the clear: asked anything, the key has left.
+	asked := make(chan string, 1)
+	plain := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case asked <- r.Header.Get("X-Api-Key"):
+		default:
+		}
+	}))
+	t.Cleanup(plain.Close)
+
 	// without is the whole command line less one flag and its value.
 	without := func(dropped string) []string {
 		var args []string
@@ -666,8 +676,16 @@ func TestWhatADeploymentGetsWrongForTheConsole(t *testing.T) {
 	}{
 		"no metrics store": {consoletest.APIKey, without("--metrics-url"), "unifi: it writes metrics and --metrics-url is empty"},
 		"no address":       {consoletest.APIKey, without("--unifi.url"), "unifi: --unifi.url is empty"},
-		"no fingerprint":   {consoletest.APIKey, without("--unifi.fingerprint"), "unifi: --unifi.fingerprint is empty"},
-		"no key":           {"", whole, "unifi: UNIFI_API_KEY is empty"},
+		"an address in the clear": {
+			consoletest.APIKey, append(without("--unifi.url"), "--unifi.url", plain.URL),
+			"unifi: --unifi.url is not an https address",
+		},
+		"an address with no scheme": {
+			consoletest.APIKey, append(without("--unifi.url"), "--unifi.url", "console.example"),
+			"unifi: --unifi.url is not an https address",
+		},
+		"no fingerprint": {consoletest.APIKey, without("--unifi.fingerprint"), "unifi: --unifi.fingerprint is empty"},
+		"no key":         {"", whole, "unifi: UNIFI_API_KEY is empty"},
 		"no interval": {
 			consoletest.APIKey, append(without("--unifi.interval"), "--unifi.interval", "0s"),
 			"unifi: --unifi.interval is not above zero",
@@ -688,6 +706,12 @@ func TestWhatADeploymentGetsWrongForTheConsole(t *testing.T) {
 	select {
 	case got := <-st.writes:
 		t.Errorf("a deployment that was refused wrote:\n%s", got.body)
+	default:
+	}
+
+	select {
+	case key := <-asked:
+		t.Errorf("an address in the clear was sent a request, with the key %q", key)
 	default:
 	}
 }
