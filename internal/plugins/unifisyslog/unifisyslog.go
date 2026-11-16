@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"time"
+	_ "time/tzdata" // the zones --unifi-syslog.location names, compiled in: an image from scratch has none
 
 	"github.com/duncanite/collector/internal/plugin"
 )
