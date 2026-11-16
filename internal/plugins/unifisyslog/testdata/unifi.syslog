@@ -1,0 +1,39 @@
+# One datagram per line, in the shapes UniFi's remote syslog sends them; the
+# \n that ends a line is the line feed that ends the datagram. Every name and
+# address is a placeholder: hosts, clients and policies are invented, IP
+# addresses are from the documentation ranges (192.0.2.0/24, 198.51.100.0/24,
+# 203.0.113.0/24), MAC addresses from 00:00:5e:00:53:00/24.
+
+# An access point, a daemon's line: the tag is "<mac>,<model>-<firmware>", and
+# the program is named twice.
+<30>Nov 15 15:54:46 Attic 00005e005301,UAP-nanoHD-6.7.57+15670: mcad: mcad[15140]: wireless_agg_stats.log_sta_anomalies(): bssid=00:00:5e:00:53:02 radio=ra0 vap=ra3 sta=00:00:5e:00:53:10 satisfaction_now=79 anomalies=tcp_latency\n
+
+# An access point, a kernel line: no pid.
+<4>Nov 15 15:54:49 Attic 00005e005301,UAP-nanoHD-6.7.57+15670: kernel: [583602.192961] ra3: Send NULL to STA-00:00:5e:00:53:11 idle(60) timeout(180)\n
+
+# An access point, the first of the two program names left empty.
+<14>Nov 15 16:05:20 Attic 00005e005301,UAP-nanoHD-6.7.57+15670: : wevent[11718]: wevent.ubnt_custom_event(): EVENT_STA_JOIN ra3: 00:00:5e:00:53:31 / 14\n
+
+# The gateway: its own name where the program's belongs, then "<program>[pid]:".
+<14>Nov 15 15:54:49 Gateway Gateway mcad[4588]: udapi-cfg._udapi_lu_set_inform_interval(): Changing LU inform interval 1 -> 20 (cur-state=ON)\n
+
+# The gateway, a message that starts with spaces and holds runs of them.
+<30>Nov 15 15:55:15 Gateway Gateway earlyoom[1838]:   psi cpu  some avg10= 4.59% avg60= 7.33%\n
+
+# The gateway's firewall log: a policy's block between two networks, UDP. The
+# line ends with a space.
+<13>Nov 15 16:08:42 Gateway Gateway [LAN_LAN-D-10004] DESCR="Block Visitors to Family" IN=br4 OUT=br2 MAC=00:00:5e:00:53:01:00:00:5e:00:53:20:08:00 SRC=192.0.2.16 DST=198.51.100.170 LEN=32 TOS=00 PREC=0x00 TTL=63 ID=30555 PROTO=UDP SPT=3722 DPT=3722 LEN=12 MARK=0x21940000 \n
+
+# The gateway's firewall log: a port forward, TCP, no outbound interface yet,
+# a bracket inside the policy's name, flags among the fields.
+<13>Nov 15 16:05:23 Gateway Gateway [PREROUTING-DNAT-2] DESCR="PortForward DNAT [Web]" IN=br2 OUT= MAC=00:00:5e:00:53:01:00:00:5e:00:53:21:08:00 SRC=192.0.2.150 DST=203.0.113.244 LEN=64 TOS=18 PREC=0xA0 TTL=64 ID=0 PROTO=TCP SPT=59910 DPT=8443 SEQ=880678430 ACK=0 WINDOW=65535 SYN URGP=0 MARK=0x21940000 \n
+
+# The console's events are CEF, with no <priority> at their head. A firewall
+# block, ICMP, so no ports; values hold spaces and parentheses.
+Nov 15 16:04:29 Gateway CEF:0|Ubiquiti|UniFi Network|10.6.109|203|Blocked by Firewall|4|UNIFIcategory=Security UNIFIhost=Gateway proto=ICMP act=blocked UNIFIrisk=low UNIFIpolicyName=Block Plugs to External UNIFIpolicyType=Firewall UNIFIdirection=outgoing deviceInboundInterface=Devices deviceOutboundInterface=Uplink (WAN1) dst=203.0.113.100 UNIFIsrcClientAlias=Porch Plug UNIFIsrcClientHostname=plug UNIFIsrcClientIp=192.0.2.168 UNIFIsrcClientMac=00:00:5e:00:53:30 UNIFIsrcClientModel=Smart Plug Mini UNIFIsrcZone=Internal UNIFIdstRegion=US UNIFIdstZone=External UNIFIfirewallPolicy=Block Plugs to External UNIFItotalBytes=84 UNIFItotalPackets=1 UNIFIflowCount=1 UNIFIflowId=null UNIFIutcTime=2026-11-16T00:04:29.427Z msg=Porch Plug was blocked from accessing 203.0.113.100 by the Block Plugs to External Firewall Policy.\n
+
+# An intrusion detection alert: CEF severity 7, ports, the signature and its id.
+Nov 15 16:10:37 Gateway CEF:0|Ubiquiti|UniFi Network|10.6.109|200|Threat Detected|7|UNIFIcategory=Security UNIFIhost=Gateway proto=TCP spt=62243 dpt=22 act=allowed app=SSH UNIFIrisk=medium UNIFIpolicyName=Scanning Activity UNIFIpolicyType=IDS/IPS UNIFIdirection=outgoing deviceInboundInterface=Family UNIFIdeviceMac=00:00:5e:00:53:01 UNIFIdeviceName=Gateway UNIFIdeviceModel=UCG-Max UNIFIdeviceIp=192.0.2.1 UNIFIdeviceVersion=6.0.17 src=192.0.2.150 dst=203.0.113.160 UNIFIsrcZone=Internal UNIFIdstRegion=US UNIFItotalBytes=78 UNIFItotalPackets=1 UNIFIpacketsReceived=0 UNIFIpacketsSent=1 UNIFIbytesReceived=0 UNIFIbytesSent=78 UNIFIflowCount=1 UNIFIflowId=null UNIFIflowStartTime=Nov 15, 2026 at 4:10:37.535 PM UNIFIipsSessionId=1000000000000001 UNIFIipsSignature=ET SCAN Potential SSH Scan OUTBOUND UNIFIipsSignatureId=2003068 UNIFIutcTime=2026-11-16T00:10:37.758Z msg=A network intrusion attempt from 192.0.2.150 to 203.0.113.160 has been detected.\n
+
+# A wireless client joining: CEF severity 1, a sentence with periods and a colon for a message.
+Nov 15 16:05:26 Gateway CEF:0|Ubiquiti|UniFi Network|10.6.109|400|WiFi Client Connected|1|UNIFIcategory=Client Devices UNIFIhost=Gateway UNIFIconnectedToDeviceName=Attic UNIFIconnectedToDeviceIp=192.0.2.153 UNIFIconnectedToDeviceMac=00:00:5e:00:53:03 UNIFIconnectedToDeviceModel=UAP-nanoHD UNIFIconnectedToDeviceVersion=6.7.57 UNIFIclientAlias=Hall Thermostat UNIFIclientIp=192.0.2.225 UNIFIclientMac=00:00:5e:00:53:31 UNIFIwifiChannel=11 UNIFIwifiChannelWidth=20 UNIFIwifiName=Example Devices UNIFIwifiBand=ng UNIFIauthMethod=wpapsk UNIFIWiFiRssi=-81 UNIFInetworkName=Devices UNIFInetworkSubnet=192.0.2.0/24 UNIFInetworkVlan=3 UNIFIutcTime=2026-11-16T00:05:26.102Z msg=Hall Thermostat connected to Example Devices on Attic. Connection Info: Ch. 11 (2.4 GHz, 20 MHz), -81 dBm. IP: 192.0.2.225\n

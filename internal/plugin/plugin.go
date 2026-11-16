@@ -26,9 +26,36 @@ type Plugin interface {
 }
 
 // Output is where a plugin hands over what it collected. Nothing is kept:
-// a write the store refuses is lost, and says so by its error.
+// a write the store refuses is lost, and says so by its error. A store the
+// deployment did not name is nil here, and a plugin that needs it says so.
 type Output struct {
 	Metrics MetricWriter
+	Logs    LogWriter
+}
+
+// LogWriter takes records to the logs store.
+type LogWriter interface {
+	// Write sends records in one request. An error means the store did
+	// not take them and they are gone.
+	Write(ctx context.Context, records []Record) error
+}
+
+// Record is one log line: when it happened, how severe it is, what it
+// says, and what else is known of it.
+type Record struct {
+	Time time.Time
+	// Severity is the syslog keyword: "info", "warning", "err"; empty when
+	// the source gave none.
+	Severity string
+	Body     string
+	Fields   []Field
+}
+
+// Field is one name and value of a record. The names are OpenTelemetry's
+// where it has one: host.name, service.name, process.pid.
+type Field struct {
+	Name  string
+	Value string
 }
 
 // MetricWriter takes samples to the metrics store.

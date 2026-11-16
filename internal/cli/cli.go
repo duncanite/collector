@@ -34,7 +34,6 @@ const storeTimeout = 30 * time.Second
 var (
 	errNothingEnabled = errors.New("no plugin is enabled: name some with --enable")
 	errUnknownPlugin  = errors.New("no such plugin")
-	errNoMetricsURL   = errors.New("--metrics-url is empty")
 )
 
 // enabled is the --enable flag: plugin names, comma-separated, given once
@@ -60,12 +59,14 @@ func Run(ctx context.Context, args []string, stderr io.Writer, plugins ...plugin
 	var (
 		names      enabled
 		metricsURL string
+		logsURL    string
 	)
 
 	set := flag.NewFlagSet("collector", flag.ContinueOnError)
 	set.SetOutput(stderr)
 	set.Var(&names, "enable", "the plugins to run, by name, comma-separated; may be repeated")
 	set.StringVar(&metricsURL, "metrics-url", "", "the metrics store: VictoriaMetrics' scheme and host")
+	set.StringVar(&logsURL, "logs-url", "", "the logs store: VictoriaLogs' scheme and host")
 
 	for _, one := range plugins {
 		one.Flags(set)
@@ -80,33 +81,72 @@ func Run(ctx context.Context, args []string, stderr io.Writer, plugins ...plugin
 	}
 
 	chosen, err := choose(names, plugins)
-	if err == nil && metricsURL == "" {
-		err = errNoMetricsURL
-	}
-
 	if err != nil {
 		fmt.Fprintln(stderr, "collector:", err)
 
 		return ExitUsage
 	}
 
-	metrics, err := victoria.NewMetrics(
-		&http.Client{Transport: network.NewTransport(), Timeout: storeTimeout},
-		metricsURL,
-	)
+	out, err := stores(metricsURL, logsURL)
 	if err != nil {
 		fmt.Fprintln(stderr, "collector:", err)
 
 		return ExitUsage
 	}
 
-	if err := collect(ctx, chosen, metrics); err != nil {
+	if err := collect(ctx, chosen, out); err != nil {
 		fmt.Fprintln(stderr, "collector:", err)
 
 		return ExitError
 	}
 
 	return ExitOK
+}
+
+// outputs is the stores a deployment named; one it did not name is nil,
+// and a plugin that needs it refuses to run.
+type outputs struct {
+	metrics *victoria.Metrics
+	logs    *victoria.Logs
+}
+
+// stores opens the stores whose addresses are given.
+func stores(metricsURL, logsURL string) (outputs, error) {
+	var (
+		out    outputs
+		err    error
+		client = &http.Client{Transport: network.NewTransport(), Timeout: storeTimeout}
+	)
+
+	if metricsURL != "" {
+		if out.metrics, err = victoria.NewMetrics(client, metricsURL); err != nil {
+			return outputs{}, fmt.Errorf("--metrics-url: %w", err)
+		}
+	}
+
+	if logsURL != "" {
+		if out.logs, err = victoria.NewLogs(client, logsURL); err != nil {
+			return outputs{}, fmt.Errorf("--logs-url: %w", err)
+		}
+	}
+
+	return out, nil
+}
+
+// output is what one plugin is handed: each store the deployment named,
+// writing under the plugin's name.
+func (out outputs) output(name string) plugin.Output {
+	var handed plugin.Output
+
+	if out.metrics != nil {
+		handed.Metrics = out.metrics.For(name)
+	}
+
+	if out.logs != nil {
+		handed.Logs = out.logs.For(name)
+	}
+
+	return handed
 }
 
 // choose returns the plugins names enable, in the order given.
@@ -140,7 +180,7 @@ func choose(names []string, plugins []plugin.Plugin) ([]plugin.Plugin, error) {
 
 // collect starts every plugin and waits for them all. The first to return an
 // error ends the others, and its error is the one returned.
-func collect(ctx context.Context, plugins []plugin.Plugin, metrics *victoria.Metrics) error {
+func collect(ctx context.Context, plugins []plugin.Plugin, out outputs) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -152,7 +192,7 @@ func collect(ctx context.Context, plugins []plugin.Plugin, metrics *victoria.Met
 
 	for _, one := range plugins {
 		wait.Go(func() {
-			err := one.Run(ctx, plugin.Output{Metrics: metrics.For(one.Name())})
+			err := one.Run(ctx, out.output(one.Name()))
 			if err == nil {
 				return
 			}
