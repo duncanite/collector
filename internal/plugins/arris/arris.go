@@ -33,7 +33,7 @@ const (
 )
 
 var (
-	errNoURL         = errors.New("--arris.url is empty")
+	errNoHost        = errors.New("--arris.host is empty")
 	errNoFingerprint = errors.New("--arris.fingerprint is empty")
 	errNoPassword    = errors.New(passwordVar + " is empty")
 	errNoInterval    = errors.New("--arris.interval is not above zero")
@@ -42,7 +42,8 @@ var (
 
 // Plugin polls one modem.
 type Plugin struct {
-	url         string
+	host        string
+	origin      string
 	username    string
 	fingerprint string
 	interval    time.Duration
@@ -54,10 +55,10 @@ func New() *Plugin { return &Plugin{} }
 // Name is "arris".
 func (*Plugin) Name() string { return name }
 
-// Flags adds the modem's address, account, certificate and polling
+// Flags adds the modem's host, account, certificate and polling
 // interval. The password comes from ARRIS_PASSWORD.
 func (p *Plugin) Flags(set *flag.FlagSet) {
-	set.StringVar(&p.url, "arris.url", "", "the modem's page: scheme and host")
+	set.StringVar(&p.host, "arris.host", "", "the modem: its name or address, and its port when not 443; https always")
 	set.StringVar(&p.username, "arris.username", "admin", "the modem's administrator account")
 	set.StringVar(&p.fingerprint, "arris.fingerprint", "",
 		"SHA-256 of the modem's certificate, hex, pinned in place of the system roots")
@@ -73,8 +74,8 @@ func (p *Plugin) Run(ctx context.Context, out plugin.Output) error {
 	switch {
 	case out.Metrics == nil:
 		return errNoMetrics
-	case p.url == "":
-		return errNoURL
+	case p.host == "":
+		return errNoHost
 	case p.fingerprint == "":
 		return errNoFingerprint
 	case password == "":
@@ -82,6 +83,15 @@ func (p *Plugin) Run(ctx context.Context, out plugin.Output) error {
 	case p.interval <= 0:
 		return errNoInterval
 	}
+
+	// A host and never a URL: the password is sent in the login, and the
+	// pinned certificate guards nothing on a connection that has none.
+	origin, err := plugin.HTTPS(p.host)
+	if err != nil {
+		return fmt.Errorf("--arris.host: %w", err)
+	}
+
+	p.origin = origin
 
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
@@ -132,7 +142,7 @@ func (p *Plugin) read(ctx context.Context, password string, now time.Time) ([]pl
 		return nil, fmt.Errorf("the modem's certificate: %w", err)
 	}
 
-	session, err := sb8200.Login(ctx, client, p.url, p.username, password)
+	session, err := sb8200.Login(ctx, client, p.origin, p.username, password)
 	if err != nil {
 		return nil, fmt.Errorf("logging in: %w", err)
 	}

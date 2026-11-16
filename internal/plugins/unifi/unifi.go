@@ -12,7 +12,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"time"
 
@@ -33,10 +32,7 @@ const keyVar = "UNIFI_API_KEY" // #nosec G101 -- the variable's name, not a cred
 const timeout = 30 * time.Second
 
 var (
-	errNoURL    = errors.New("--unifi.url is empty")
-	errNotHTTPS = errors.New(
-		"--unifi.url is not an https address: the API key would cross the network in the clear",
-	)
+	errNoHost        = errors.New("--unifi.host is empty")
 	errNoFingerprint = errors.New("--unifi.fingerprint is empty")
 	errNoKey         = errors.New(keyVar + " is empty")
 	errNoInterval    = errors.New("--unifi.interval is not above zero")
@@ -46,7 +42,7 @@ var (
 
 // Plugin polls one console.
 type Plugin struct {
-	url         string
+	host        string
 	site        string
 	fingerprint string
 	interval    time.Duration
@@ -58,10 +54,15 @@ func New() *Plugin { return &Plugin{} }
 // Name is "unifi".
 func (*Plugin) Name() string { return name }
 
-// Flags adds the console's address, site, certificate and polling
+// Flags adds the console's host, site, certificate and polling
 // interval. The API key comes from UNIFI_API_KEY.
 func (p *Plugin) Flags(set *flag.FlagSet) {
-	set.StringVar(&p.url, "unifi.url", "", "the console: scheme and host")
+	set.StringVar(
+		&p.host,
+		"unifi.host",
+		"",
+		"the console: its name or address, and its port when not 443; https always",
+	)
 	set.StringVar(&p.site, "unifi.site", console.DefaultSite, "the Network site")
 	set.StringVar(&p.fingerprint, "unifi.fingerprint", "",
 		"SHA-256 of the console's certificate, hex, pinned in place of the system roots")
@@ -77,10 +78,8 @@ func (p *Plugin) Run(ctx context.Context, out plugin.Output) error {
 	switch {
 	case out.Metrics == nil:
 		return errNoMetrics
-	case p.url == "":
-		return errNoURL
-	case !encrypted(p.url):
-		return errNotHTTPS
+	case p.host == "":
+		return errNoHost
 	case p.fingerprint == "":
 		return errNoFingerprint
 	case key == "":
@@ -89,14 +88,22 @@ func (p *Plugin) Run(ctx context.Context, out plugin.Output) error {
 		return errNoInterval
 	}
 
+	// A host and never a URL: the key goes out in a header of the first
+	// request, and the pinned certificate guards nothing on a connection
+	// that has none.
+	origin, err := plugin.HTTPS(p.host)
+	if err != nil {
+		return fmt.Errorf("--unifi.host: %w", err)
+	}
+
 	httpClient, err := console.HTTPClient(p.fingerprint, false, timeout)
 	if err != nil {
 		return fmt.Errorf("--unifi.fingerprint: %w", err)
 	}
 
-	client, err := console.New(httpClient, p.url, key, p.site)
+	client, err := console.New(httpClient, origin, key, p.site)
 	if err != nil {
-		return fmt.Errorf("--unifi.url: %w", err)
+		return fmt.Errorf("--unifi.host: %w", err)
 	}
 
 	devices, err := deviceList()
@@ -116,19 +123,6 @@ func (p *Plugin) Run(ctx context.Context, out plugin.Output) error {
 		case <-ticker.C:
 		}
 	}
-}
-
-// encrypted reports whether address is an https one. The key goes out in
-// a header of the first request, before any answer could say the console
-// is elsewhere, and the pinned certificate guards nothing on a connection
-// that has none.
-func encrypted(address string) bool {
-	parsed, err := url.Parse(address)
-	if err != nil || parsed == nil {
-		return false
-	}
-
-	return parsed.Scheme == "https" && parsed.Host != ""
 }
 
 // deviceList is the kind the console's library lists the devices by.

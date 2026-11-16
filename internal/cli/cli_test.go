@@ -165,7 +165,7 @@ func modem(t *testing.T, st *store, interval string) (*sb8200test.Modem, []strin
 	return fake, []string{
 		"--enable", "arris",
 		"--metrics-url", st.server.URL,
-		"--arris.url", fake.URL(),
+		"--arris.host", strings.TrimPrefix(fake.URL(), "https://"),
 		"--arris.fingerprint", fake.Fingerprint(),
 		"--arris.interval", interval,
 	}
@@ -343,10 +343,14 @@ func TestWhatADeploymentGetsWrong(t *testing.T) {
 		"no metrics store":     {without("--metrics-url"), sb8200test.Password, cli.ExitError, "arris: it writes metrics and --metrics-url is empty"},
 		"a store with no host": {append(without("--metrics-url"), "--metrics-url", "nowhere"), sb8200test.Password, cli.ExitUsage, "no scheme or no host"},
 		"an unknown flag":      {append(args, "--arris.password", "x"), sb8200test.Password, cli.ExitUsage, "flag provided but not defined"},
-		"no modem address":     {without("--arris.url"), sb8200test.Password, cli.ExitError, "arris: --arris.url is empty"},
-		"no fingerprint":       {without("--arris.fingerprint"), sb8200test.Password, cli.ExitError, "arris: --arris.fingerprint is empty"},
-		"no password":          {args, "", cli.ExitError, "arris: ARRIS_PASSWORD is empty"},
-		"an interval of zero":  {append(without("--arris.interval"), "--arris.interval", "0s"), sb8200test.Password, cli.ExitError, "arris: --arris.interval is not above zero"},
+		"no modem address":     {without("--arris.host"), sb8200test.Password, cli.ExitError, "arris: --arris.host is empty"},
+		"a modem address that is a URL": {
+			append(without("--arris.host"), "--arris.host", "http://modem.example"),
+			sb8200test.Password, cli.ExitError, "arris: --arris.host: not a host",
+		},
+		"no fingerprint":      {without("--arris.fingerprint"), sb8200test.Password, cli.ExitError, "arris: --arris.fingerprint is empty"},
+		"no password":         {args, "", cli.ExitError, "arris: ARRIS_PASSWORD is empty"},
+		"an interval of zero": {append(without("--arris.interval"), "--arris.interval", "0s"), sb8200test.Password, cli.ExitError, "arris: --arris.interval is not above zero"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("ARRIS_PASSWORD", test.password)
@@ -557,7 +561,7 @@ func unifiConsole(t *testing.T, st *store) []string {
 	return []string{
 		"--enable", "unifi",
 		"--metrics-url", st.server.URL,
-		"--unifi.url", fake.URL,
+		"--unifi.host", strings.TrimPrefix(fake.URL, "https://"),
 		"--unifi.fingerprint", hex.EncodeToString(pin[:]),
 		"--unifi.interval", "1h",
 	}
@@ -675,14 +679,22 @@ func TestWhatADeploymentGetsWrongForTheConsole(t *testing.T) {
 		says string
 	}{
 		"no metrics store": {consoletest.APIKey, without("--metrics-url"), "unifi: it writes metrics and --metrics-url is empty"},
-		"no address":       {consoletest.APIKey, without("--unifi.url"), "unifi: --unifi.url is empty"},
-		"an address in the clear": {
-			consoletest.APIKey, append(without("--unifi.url"), "--unifi.url", plain.URL),
-			"unifi: --unifi.url is not an https address",
+		"no address":       {consoletest.APIKey, without("--unifi.host"), "unifi: --unifi.host is empty"},
+		"an address that is a URL in the clear": {
+			consoletest.APIKey, append(without("--unifi.host"), "--unifi.host", plain.URL),
+			"unifi: --unifi.host: not a host",
 		},
-		"an address with no scheme": {
-			consoletest.APIKey, append(without("--unifi.url"), "--unifi.url", "console.example"),
-			"unifi: --unifi.url is not an https address",
+		"an address that is a URL": {
+			consoletest.APIKey, append(without("--unifi.host"), "--unifi.host", "https://console.example"),
+			"unifi: --unifi.host: not a host",
+		},
+		"an address with a path": {
+			consoletest.APIKey, append(without("--unifi.host"), "--unifi.host", "console.example/proxy"),
+			"unifi: --unifi.host: not a host",
+		},
+		"an address with an account": {
+			consoletest.APIKey, append(without("--unifi.host"), "--unifi.host", "someone@console.example"),
+			"unifi: --unifi.host: not a host",
 		},
 		"no fingerprint": {consoletest.APIKey, without("--unifi.fingerprint"), "unifi: --unifi.fingerprint is empty"},
 		"no key":         {"", whole, "unifi: UNIFI_API_KEY is empty"},
@@ -712,6 +724,47 @@ func TestWhatADeploymentGetsWrongForTheConsole(t *testing.T) {
 	select {
 	case key := <-asked:
 		t.Errorf("an address in the clear was sent a request, with the key %q", key)
+	default:
+	}
+}
+
+// A console that answers in the clear, on the host the collector is given:
+// the collector speaks TLS to it, the two never agree, and no request, so
+// no key, ever reaches it.
+func TestAListenerInTheClearIsNeverSentTheKey(t *testing.T) {
+	t.Setenv("UNIFI_API_KEY", consoletest.APIKey)
+
+	st := newStore(t, 0)
+
+	asked := make(chan string, 1)
+	plain := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case asked <- r.Header.Get("X-Api-Key"):
+		default:
+		}
+	}))
+	t.Cleanup(plain.Close)
+
+	args := unifiConsole(t, st)
+	for index, arg := range args {
+		if arg == "--unifi.host" {
+			args[index+1] = strings.TrimPrefix(plain.URL, "http://")
+		}
+	}
+
+	col := start(t, args...)
+
+	if got := untimed(t, st.next(t).body); got != "unifi_up{job=\"unifi\"} 0\n" {
+		t.Errorf("the metrics store was sent:\n%s", got)
+	}
+
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+
+	select {
+	case key := <-asked:
+		t.Errorf("a listener in the clear was sent a request, with the key %q", key)
 	default:
 	}
 }
