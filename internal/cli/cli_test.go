@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/duncanite/collector/internal/cli"
 	"github.com/duncanite/collector/internal/plugins/arris"
+	"github.com/duncanite/collector/internal/plugins/ipfix"
 	"github.com/duncanite/collector/internal/plugins/otlp"
 	"github.com/duncanite/collector/internal/plugins/unifi"
 	"github.com/duncanite/collector/internal/plugins/unifisyslog"
@@ -131,7 +133,10 @@ func start(t *testing.T, args ...string) *collector {
 	col := &collector{cancel: cancel, done: make(chan int, 1), stderr: &bytes.Buffer{}}
 
 	go func() {
-		col.done <- cli.Run(ctx, args, col.stderr, arris.New(), otlp.New(), unifi.New(), unifisyslog.New())
+		col.done <- cli.Run(
+			ctx, args, col.stderr,
+			arris.New(), ipfix.New(), otlp.New(), unifi.New(), unifisyslog.New(),
+		)
 	}()
 
 	t.Cleanup(cancel)
@@ -547,6 +552,127 @@ func TestWhatADeploymentGetsWrongForSyslog(t *testing.T) {
 		"an address that is none": {
 			[]string{"--enable", "unifi-syslog", "--logs-url", st.server.URL, "--unifi-syslog.listen", "nowhere"},
 			"unifi-syslog: --unifi-syslog.listen:",
+		},
+	} {
+		code, stderr := start(t, test.args...).wait(t)
+		if code != cli.ExitError || !strings.Contains(stderr, test.says) {
+			t.Errorf("%s: exit = %d, want %d and %q:\n%s", name, code, cli.ExitError, test.says, stderr)
+		}
+	}
+}
+
+// flows is an IPFIX message of one template and two flows by it, exported
+// now.
+func flows() string {
+	var out []byte
+
+	for _, value := range []uint16{
+		10, 60, // version, and the length of all of this
+	} {
+		out = binary.BigEndian.AppendUint16(out, value)
+	}
+
+	out = binary.BigEndian.AppendUint32(out, uint32(time.Now().Unix())) // export time
+	out = binary.BigEndian.AppendUint32(out, 0)                         // sequence
+	out = binary.BigEndian.AppendUint32(out, 1)                         // observation domain
+
+	for _, value := range []uint16{
+		2, 20, 256, 3, // a template set of one template, numbered 256, of three fields:
+		8, 4, // sourceIPv4Address
+		12, 4, // destinationIPv4Address
+		1, 2, // octetDeltaCount, in two octets
+		256, 24, // a data set by it: two records of ten octets
+	} {
+		out = binary.BigEndian.AppendUint16(out, value)
+	}
+
+	out = append(out,
+		192, 0, 2, 7, 198, 51, 100, 9, 0x05, 0x39,
+		192, 0, 2, 8, 198, 51, 100, 9, 0x00, 0x2a,
+	)
+
+	return string(out)
+}
+
+func TestFlowsReachTheLogsStore(t *testing.T) {
+	t.Parallel()
+
+	st := newStore(t, 0)
+	address := listening(t)
+
+	col := start(t, "--enable", "ipfix", "--logs-url", st.server.URL, "--ipfix.listen", address)
+
+	sent := time.Now().Truncate(time.Second)
+	got := send(t, st, address, flows())
+
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+
+	query, err := url.ParseQuery(got.query)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.path != "/insert/jsonline" || query.Get("_stream_fields") != "job,network.peer.address" {
+		t.Errorf("the write went to %q with %q", got.path, got.query)
+	}
+
+	// The datagram's two flows, in the one write.
+	lines := strings.Split(strings.TrimSuffix(got.body, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("the logs store was sent %d lines, want the two flows: %q", len(lines), got.body)
+	}
+
+	var line map[string]string
+
+	if err = json.Unmarshal([]byte(lines[0]), &line); err != nil {
+		t.Fatalf("the logs store was sent %q: %v", got.body, err)
+	}
+
+	for name, want := range map[string]string{
+		"_msg":                      "192.0.2.7 > 198.51.100.9 1337 bytes",
+		"job":                       "ipfix",
+		"source.address":            "192.0.2.7",
+		"destination.address":       "198.51.100.9",
+		"ipfix.octetDeltaCount":     "1337",
+		"ipfix.observationDomainId": "1",
+		"ipfix.templateId":          "256",
+		"network.peer.address":      "127.0.0.1",
+	} {
+		if line[name] != want {
+			t.Errorf("%s is %q, want %q, in %q", name, line[name], want, got.body)
+		}
+	}
+
+	// A flow that gives no time of its own is dated by its export, which
+	// is to the second.
+	at, err := time.Parse(time.RFC3339Nano, line["_time"])
+	if err != nil || at.Before(sent) || at.After(time.Now()) {
+		t.Errorf("_time is %q, want the export's, from %s on: %v", line["_time"], sent.UTC().Format(time.RFC3339), err)
+	}
+}
+
+func TestWhatADeploymentGetsWrongForFlows(t *testing.T) {
+	t.Parallel()
+
+	st := newStore(t, 0)
+
+	for name, test := range map[string]struct {
+		args []string
+		says string
+	}{
+		"no logs store": {
+			[]string{"--enable", "ipfix", "--ipfix.listen", "127.0.0.1:0"},
+			"ipfix: it writes logs and --logs-url is empty",
+		},
+		"no address": {
+			[]string{"--enable", "ipfix", "--logs-url", st.server.URL},
+			"ipfix: --ipfix.listen is empty",
+		},
+		"an address that is none": {
+			[]string{"--enable", "ipfix", "--logs-url", st.server.URL, "--ipfix.listen", "nowhere"},
+			"ipfix: --ipfix.listen:",
 		},
 	} {
 		code, stderr := start(t, test.args...).wait(t)
