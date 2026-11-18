@@ -1,0 +1,52 @@
+[
+  {
+    "mac": "00:00:5e:00:53:10",
+    "name": "Laptop",
+    "hostname": "laptop-host",
+    "is_wired": false,
+    "network": "Family",
+    "last_uplink_name": "Attic",
+    "essid": "Home",
+    "radio": "na",
+    "uptime": 7200,
+    "satisfaction": 97,
+    "signal": -52,
+    "noise": -98,
+    "rx_rate": 866000,
+    "tx_rate": 780000,
+    "wifi_tx_retries_percentage": 2.5,
+    "rx_bytes": 3000000,
+    "tx_bytes": 41000000
+  },
+  {
+    "mac": "00:00:5e:00:53:11",
+    "hostname": "thermostat",
+    "is_wired": false,
+    "network": "Plugs",
+    "last_uplink_name": "Attic",
+    "essid": "Home",
+    "radio": "ng",
+    "uptime": 86400,
+    "satisfaction": 83,
+    "signal": -71,
+    "noise": -96,
+    "rx_rate": 72000,
+    "tx_rate": 72000,
+    "wifi_tx_retries_percentage": 0.0,
+    "rx_bytes": 650000,
+    "tx_bytes": 150000
+  },
+  {
+    "mac": "00:00:5e:00:53:12",
+    "is_wired": true,
+    "network": "Family",
+    "last_uplink_name": "Switch",
+    "sw_port": 3,
+    "uptime": 604800,
+    "satisfaction": 100,
+    "wired_rate_mbps": 1000,
+    "wired-rx_bytes": 52000000,
+    "wired-tx_bytes": 910000000,
+    "wifi_tx_retries_percentage": 0.0
+  }
+]

@@ -1,0 +1,39 @@
+[
+  {
+    "subsystem": "wlan",
+    "status": "ok",
+    "num_user": 2,
+    "num_guest": 0,
+    "num_adopted": 1,
+    "num_disconnected": 0,
+    "num_pending": 0
+  },
+  {
+    "subsystem": "wan",
+    "status": "ok",
+    "num_adopted": 1,
+    "num_disconnected": 0,
+    "num_pending": 0,
+    "num_sta": 3
+  },
+  {
+    "subsystem": "www",
+    "status": "ok",
+    "latency": 14,
+    "drops": 2,
+    "uptime": 90000
+  },
+  {
+    "subsystem": "lan",
+    "status": "ok",
+    "num_user": 1,
+    "num_guest": 0,
+    "num_adopted": 1,
+    "num_disconnected": 0,
+    "num_pending": 0
+  },
+  {
+    "subsystem": "vpn",
+    "status": "unknown"
+  }
+]
