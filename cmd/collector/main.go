@@ -14,6 +14,7 @@ import (
 	"github.com/duncanite/collector/internal/cli"
 	"github.com/duncanite/collector/internal/plugin"
 	"github.com/duncanite/collector/internal/plugins/arris"
+	"github.com/duncanite/collector/internal/plugins/otlp"
 	"github.com/duncanite/collector/internal/plugins/unifi"
 	"github.com/duncanite/collector/internal/plugins/unifisyslog"
 )
@@ -23,6 +24,7 @@ func main() {
 		// Every plugin this build holds. A new source is one more line.
 		plugins := []plugin.Plugin{
 			arris.New(),
+			otlp.New(),
 			unifi.New(),
 			unifisyslog.New(),
 		}

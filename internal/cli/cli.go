@@ -108,6 +108,9 @@ func Run(ctx context.Context, args []string, stderr io.Writer, plugins ...plugin
 type outputs struct {
 	metrics *victoria.Metrics
 	logs    *victoria.Logs
+	// The same two stores, for what is passed on unread.
+	metricsRelay *victoria.Relay
+	logsRelay    *victoria.Relay
 }
 
 // stores opens the stores whose addresses are given.
@@ -122,10 +125,18 @@ func stores(metricsURL, logsURL string) (outputs, error) {
 		if out.metrics, err = victoria.NewMetrics(client, metricsURL); err != nil {
 			return outputs{}, fmt.Errorf("--metrics-url: %w", err)
 		}
+
+		if out.metricsRelay, err = victoria.NewMetricsRelay(client, metricsURL); err != nil {
+			return outputs{}, fmt.Errorf("--metrics-url: %w", err)
+		}
 	}
 
 	if logsURL != "" {
 		if out.logs, err = victoria.NewLogs(client, logsURL); err != nil {
+			return outputs{}, fmt.Errorf("--logs-url: %w", err)
+		}
+
+		if out.logsRelay, err = victoria.NewLogsRelay(client, logsURL); err != nil {
 			return outputs{}, fmt.Errorf("--logs-url: %w", err)
 		}
 	}
@@ -138,12 +149,15 @@ func stores(metricsURL, logsURL string) (outputs, error) {
 func (out outputs) output(name string) plugin.Output {
 	var handed plugin.Output
 
+	// A nil store stays a nil interface: a plugin asks whether it has one.
 	if out.metrics != nil {
 		handed.Metrics = out.metrics.For(name)
+		handed.MetricsRelay = out.metricsRelay
 	}
 
 	if out.logs != nil {
 		handed.Logs = out.logs.For(name)
+		handed.LogsRelay = out.logsRelay
 	}
 
 	return handed

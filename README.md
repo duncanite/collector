@@ -20,6 +20,7 @@ each its settings through that plugin's flags. Nothing here names a host or an a
 | Plugin | Source | Writes |
 |--------|--------|--------|
 | `arris` | An Arris SURFboard cable modem, read every `--arris.interval` over [go-arris](https://github.com/duncanite/go-arris) | Metrics: `arris_up`, the uptime, and per bonded channel its lock, frequency, power, signal-to-noise ratio and codeword error counts |
+| `otlp` | The house's own programs that speak OpenTelemetry, sending OTLP over HTTP to `--otlp.listen` | Whatever they send, unread: `/v1/metrics` to the metrics store and `/v1/logs` to the logs store, and the store's answer back to the sender |
 | `unifi` | A UniFi Network console, asked for its devices every `--unifi.interval` over [go-unifi](https://github.com/duncanite/go-unifi) | Metrics: `unifi_up`, and per device whether the console is in touch with it, its uptime, processor, memory, temperature and clients; per radio of an access point its channel, clients, utilization and retries; per port its link, speed, traffic, errors and power; per uplink to the internet its latency and availability |
 | `unifi-syslog` | UniFi's remote syslog, received on UDP at `--unifi-syslog.listen`: the gateway, the access points, the switch, and the console's CEF events | Logs: one record a line, with the host, the program and its pid, an access point's model and firmware, a firewall line's rule, policy, addresses and ports, a console event's fields under `cef.*`, and the sender's address |
 
@@ -48,6 +49,12 @@ who sent them, so the sender's address is kept on every record, and a line of a 
 nobody mapped is stored with its text whole. Its parser is fuzzed (`FuzzParse`), and its
 fixtures, `internal/plugins/unifisyslog/testdata`, hold one line per shape a device sends,
 every name and address in them a placeholder.
+
+`otlp` reads nothing of what it passes on, keeps nothing and tries nothing again: a request
+the store refuses is answered with the store's own refusal, and a store that is gone with a
+502, for the sender's exporter to do what it does. A request is streamed and never held; one
+larger than 16 MiB is refused. It asks no credential: whoever reaches its port writes into
+the stores.
 
 ## Working on it
 
