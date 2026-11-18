@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/forkcloser/xos"
@@ -153,9 +154,191 @@ func TestALineNobodyMappedIsKeptWhole(t *testing.T) {
 	}
 }
 
+// field is the value a record holds under name, or none.
+func field(record plugin.Record, name string) string {
+	for _, held := range record.Fields {
+		if held.Name == name {
+			return held.Value
+		}
+	}
+
+	return ""
+}
+
+func TestALineThatClaimsAnotherDayIsDatedByItsReading(t *testing.T) {
+	t.Parallel()
+
+	received, location := when(t)
+	leap := time.Date(2028, time.February, 29, 12, 0, 0, 0, location)
+
+	for name, test := range map[string]struct {
+		line     string
+		received time.Time
+		at       time.Time
+	}{
+		"the same evening": {
+			"<14>Nov 15 19:59:58 Gateway x: y", received,
+			time.Date(2026, time.November, 15, 19, 59, 58, 0, location),
+		},
+		"a clock some hours ahead": {
+			"<14>Nov 16 06:00:00 Gateway x: y", received,
+			time.Date(2026, time.November, 16, 6, 0, 0, 0, location),
+		},
+		"two days ahead":               {"<14>Nov 17 20:00:01 Gateway x: y", received, received},
+		"two days behind":              {"<14>Nov 13 19:59:59 Gateway x: y", received, received},
+		"a clock never set":            {"<14>Jan  1 00:00:12 Gateway x: y", received, received},
+		"a day its year does not have": {"<14>Feb 29 12:00:00 Gateway x: y", received, received},
+		"that day, in a year that has it": {
+			"<14>Feb 29 11:59:00 Gateway x: y", leap,
+			time.Date(2028, time.February, 29, 11, 59, 0, 0, location),
+		},
+		"January read in December": {
+			"<14>Jan  1 00:00:03 Gateway x: y", time.Date(2026, time.December, 31, 23, 59, 58, 0, location),
+			time.Date(2027, time.January, 1, 0, 0, 3, 0, location),
+		},
+	} {
+		record := unifisyslog.Parse([]byte(test.line), sender, test.received, location)
+
+		// Whatever its time, the rest of the line is read.
+		if !record.Time.Equal(test.at) || record.Body != "y" || field(record, "host.name") != "Gateway" {
+			t.Errorf("%s: time %s, body %q, host %q; want %s, \"y\", \"Gateway\"",
+				name, record.Time, record.Body, field(record, "host.name"), test.at)
+		}
+	}
+}
+
+func TestAnEventsOwnTimeIsTakenOnlyNearItsReading(t *testing.T) {
+	t.Parallel()
+
+	received, location := when(t)
+	header := time.Date(2026, time.November, 15, 19, 59, 0, 0, location)
+
+	const head = "Nov 15 19:59:00 Gateway CEF:0|Ubiquiti|UniFi Network|1.2.3|400|Something|1|"
+
+	for name, test := range map[string]struct {
+		claimed string
+		at      time.Time
+	}{
+		"to the millisecond": {"2026-11-16T03:59:00.250Z", header.Add(250 * time.Millisecond)},
+		"the zero time":      {"0001-01-01T00:00:00Z", header},
+		"the epoch":          {"1970-01-01T00:00:00Z", header},
+		"the end of time":    {"9999-12-31T23:59:59Z", header},
+		"two days ahead":     {"2026-11-18T04:00:00Z", header},
+		"what is not a time": {"yesterday", header},
+	} {
+		record := unifisyslog.Parse(
+			[]byte(head+"UNIFIutcTime="+test.claimed+" msg=It happened."),
+			sender,
+			received,
+			location,
+		)
+
+		// What the event claims stays readable in its field.
+		if !record.Time.Equal(test.at) || field(record, "cef.extensions.UNIFIutcTime") != test.claimed ||
+			record.Body != "It happened." {
+			t.Errorf("%s: time %s, field %q, body %q; want %s",
+				name, record.Time, field(record, "cef.extensions.UNIFIutcTime"), record.Body, test.at)
+		}
+	}
+}
+
+func TestAnEventWithMoreExtensionsThanTheConsoleWritesKeepsItsText(t *testing.T) {
+	t.Parallel()
+
+	received, location := when(t)
+
+	const head = "Nov 15 19:59:00 Gateway CEF:0|Ubiquiti|UniFi Network|1.2.3|400|Something|1|"
+
+	event := func(extensions int) (string, plugin.Record) {
+		var text strings.Builder
+
+		text.WriteString(head + "msg=It happened.")
+
+		for index := 1; index < extensions; index++ {
+			fmt.Fprintf(&text, " key%d=value", index)
+		}
+
+		return text.String(), unifisyslog.Parse([]byte(text.String()), sender, received, location)
+	}
+
+	extensions := func(record plugin.Record) int {
+		count := 0
+
+		for _, held := range record.Fields {
+			if strings.HasPrefix(held.Name, "cef.extensions.") {
+				count++
+			}
+		}
+
+		return count
+	}
+
+	// As many as are taken: the sentence is the body, the rest are fields.
+	if _, record := event(64); record.Body != "It happened." || extensions(record) != 63 {
+		t.Errorf("64 extensions: body %q and %d fields", record.Body, extensions(record))
+	}
+
+	// One more, and ten thousand: the text stays whole, and the fields stop.
+	for _, count := range []int{65, 10000} {
+		text, record := event(count)
+
+		if record.Body != text || extensions(record) != 63 {
+			t.Errorf("%d extensions: %d fields, and a body of %d bytes for a text of %d",
+				count, extensions(record), len(record.Body), len(text))
+		}
+	}
+}
+
+func TestWhatAPrinterWouldObeyIsReplaced(t *testing.T) {
+	t.Parallel()
+
+	received, location := when(t)
+
+	record := unifisyslog.Parse(
+		[]byte("<14>Nov 15 19:59:00 Ga\x1b[2Jte\x07 prog[7]: one\ttwo\x7f\u0085\nthr\x00ee\r"),
+		sender, received, location,
+	)
+
+	// The tab and the line feed are text; the line feed and the carriage
+	// return that end a datagram are not part of it.
+	if record.Body != "one\ttwo\uFFFD\uFFFD\nthr\uFFFDee" {
+		t.Errorf("body %q", record.Body)
+	}
+
+	if host := field(record, "host.name"); host != "Ga\uFFFD[2Jte\uFFFD" {
+		t.Errorf("host %q", host)
+	}
+}
+
+func TestARecordIsGroupedByItsSenderAndNothingOfTheLine(t *testing.T) {
+	t.Parallel()
+
+	received, location := when(t)
+
+	for _, datagram := range datagrams(t) {
+		record := unifisyslog.Parse([]byte(strings.TrimSuffix(datagram, `\n`)), sender, received, location)
+
+		if !slices.Equal(record.Stream, []string{"network.peer.address"}) ||
+			field(record, "network.peer.address") != sender {
+			t.Errorf("stream %q, sender %q, for %s", record.Stream, field(record, "network.peer.address"), datagram)
+		}
+	}
+}
+
 func FuzzParse(f *testing.F) {
 	for _, datagram := range datagrams(f) {
 		f.Add([]byte(strings.TrimSuffix(datagram, `\n`) + "\n"))
+	}
+
+	// What a sender that is no device might write.
+	for _, datagram := range []string{
+		"Nov 15 19:59:00 Gateway CEF:0|a|b|c|d|e|1|UNIFIutcTime=0001-01-01T00:00:00Z msg=x",
+		"Nov 15 19:59:00 Gateway CEF:0|a|b|c|d|e|1|UNIFIutcTime=9999-12-31T23:59:59Z",
+		"<14>Feb 29 12:00:00 Gateway x: y",
+		"<14>Jan  1 00:00:12 Ga\x1b[2Jte prog\x00[7]: one\x7f",
+		"Nov 15 19:59:00 Gateway CEF:0|a|b|c|d|e|1|" + strings.Repeat("k=v ", 200),
+	} {
+		f.Add([]byte(datagram))
 	}
 
 	received, location := when(f)
@@ -167,8 +350,19 @@ func FuzzParse(f *testing.F) {
 			t.Errorf("a body that is not UTF-8: %q", record.Body)
 		}
 
-		if record.Time.IsZero() {
-			t.Error("a record with no time")
+		// Its reading, or within a day of it: nothing a line says moves it
+		// further.
+		if apart := record.Time.Sub(received); apart > 24*time.Hour || apart < -24*time.Hour {
+			t.Errorf("a record dated %s, read at %s", record.Time, received)
+		}
+
+		if obeyed(record.Body) {
+			t.Errorf("a body a printer would obey: %q", record.Body)
+		}
+
+		// The header's dozen, and the extensions that are taken.
+		if len(record.Fields) > 96 {
+			t.Errorf("a record of %d fields", len(record.Fields))
 		}
 
 		for _, field := range record.Fields {
@@ -176,6 +370,18 @@ func FuzzParse(f *testing.F) {
 				!utf8.ValidString(field.Value) {
 				t.Errorf("a field that is empty or not UTF-8: %q = %q", field.Name, field.Value)
 			}
+
+			if obeyed(field.Name) || obeyed(field.Value) {
+				t.Errorf("a field a printer would obey: %q = %q", field.Name, field.Value)
+			}
 		}
+	})
+}
+
+// obeyed reports whether text holds a control character other than the
+// tab and the line feed.
+func obeyed(text string) bool {
+	return strings.ContainsFunc(text, func(char rune) bool {
+		return unicode.IsControl(char) && char != '\t' && char != '\n'
 	})
 }

@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/duncanite/collector/internal/plugin"
 )
@@ -12,9 +14,16 @@ import (
 // stamp is the timestamp of an RFC 3164 line: no year, no zone.
 const stamp = time.Stamp
 
-// day is how far ahead of its reading a line may be dated before it is
-// taken for last year's.
+// day is how far from its reading, before or after, a line may say it
+// happened and be believed. A device's clock is the network's, and a line
+// comes as it is written: one that claims another day has a clock that is
+// wrong, or a sender that is not a device.
 const day = 24 * time.Hour
+
+// peer is the field the sender's address is kept under, and what the
+// store groups a deployment's lines by: the one thing of a datagram its
+// sender does not write.
+const peer = "network.peer.address"
 
 // The syslog priority: a facility times eight, plus a severity.
 const (
@@ -28,8 +37,9 @@ var (
 	priority = regexp.MustCompile(`^<(\d{1,3})>`)
 	// An access point's tag: "<mac>,<model>-<firmware>".
 	deviceTag = regexp.MustCompile(`^([0-9a-f]{12}),(.+)-(\d[^-]*)$`)
-	// "<program>[pid]: text" or "<program>: text".
-	program = regexp.MustCompile(`^([A-Za-z0-9_./-]+)(?:\[(\d+)\])?: (.*)$`)
+	// "<program>[pid]: text" or "<program>: text"; the text may hold line
+	// feeds.
+	program = regexp.MustCompile(`(?s)^([A-Za-z0-9_./-]+)(?:\[(\d+)\])?: (.*)$`)
 	// The gateway's firewall log, the kernel's own line with no program:
 	// "[<chain>-<action>-<rule>] DESCR="<policy>" IN=… OUT=… ".
 	firewall  = regexp.MustCompile(`^\[([A-Za-z0-9_-]+)\] DESCR="([^"]*)" IN=([^ ]*) OUT=([^ ]*) `)
@@ -57,10 +67,13 @@ var (
 // Nothing is refused: a line of a shape nobody mapped becomes a record
 // with its text whole, and whatever of the header could be read.
 func Parse(datagram []byte, sender string, received time.Time, location *time.Location) plugin.Record {
-	text := strings.TrimRight(strings.ToValidUTF8(string(datagram), "�"), " \t\r\n")
+	text := printable(strings.TrimRight(string(datagram), " \t\r\n"))
 
-	line := record{Record: plugin.Record{Time: received, Body: text}}
-	line.add("network.peer.address", sender)
+	line := record{
+		Record:   plugin.Record{Time: received, Body: text, Stream: []string{peer}},
+		received: received,
+	}
+	line.add(peer, sender)
 
 	if match := priority.FindStringSubmatch(text); match != nil {
 		if pri, err := strconv.Atoi(match[1]); err == nil && pri <= maxPri {
@@ -96,9 +109,31 @@ func Parse(datagram []byte, sender string, received time.Time, location *time.Lo
 	return line.Record
 }
 
-// record is a plugin.Record being filled.
+// record is a plugin.Record being filled, and when its line was read.
 type record struct {
 	plugin.Record
+
+	received time.Time
+}
+
+// printable is text with what is not UTF-8, and every control character
+// but the tab and the line feed, replaced: an escape sequence or a NUL a
+// sender put in a line is not handed to whoever prints the store's lines.
+func printable(text string) string {
+	return strings.Map(func(char rune) rune {
+		if unicode.IsControl(char) && char != '\t' && char != '\n' {
+			return utf8.RuneError
+		}
+
+		return char
+	}, strings.ToValidUTF8(text, string(utf8.RuneError)))
+}
+
+// near reports whether at is within a day of the reading.
+func near(at, received time.Time) bool {
+	apart := at.Sub(received)
+
+	return apart <= day && apart >= -day
 }
 
 func (r *record) add(name, value string) {
@@ -108,9 +143,11 @@ func (r *record) add(name, value string) {
 }
 
 // timestamp reads the "Mmm dd hh:mm:ss " that heads an RFC 3164 line and
-// returns what follows it. The year is received's, or the one before when
-// that would put the line more than a day ahead: a line of late December
-// read in early January.
+// returns when the line says it happened and what follows. The line gives
+// no year: it is the reading's, or the one before for a line of late
+// December read in early January, whichever puts the line within a day of
+// its reading. A line that neither does, or that names a day its year does
+// not have, is dated by its reading.
 func timestamp(text string, received time.Time, location *time.Location) (time.Time, string, bool) {
 	if len(text) <= len(stamp) || text[len(stamp)] != ' ' {
 		return time.Time{}, "", false
@@ -121,14 +158,19 @@ func timestamp(text string, received time.Time, location *time.Location) (time.T
 		return time.Time{}, "", false
 	}
 
+	rest := text[len(stamp)+1:]
 	year := received.In(location).Year()
 
-	at := time.Date(year, read.Month(), read.Day(), read.Hour(), read.Minute(), read.Second(), 0, location)
-	if at.After(received.Add(day)) {
-		at = at.AddDate(-1, 0, 0)
+	for _, candidate := range [...]int{year, year - 1, year + 1} {
+		at := time.Date(candidate, read.Month(), read.Day(), read.Hour(), read.Minute(), read.Second(), 0, location)
+
+		// A day the year does not have rolls over into the next month.
+		if at.Month() == read.Month() && at.Day() == read.Day() && near(at, received) {
+			return at, rest, true
+		}
 	}
 
-	return at, text[len(stamp)+1:], true
+	return received, rest, true
 }
 
 // device reads what follows the host name on a device's own line: the

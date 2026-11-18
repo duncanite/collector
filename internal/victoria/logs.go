@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/duncanite/collector/internal/plugin"
@@ -17,13 +19,12 @@ import (
 // insertPath is VictoriaLogs' ingestion API for JSON lines.
 const insertPath = "/insert/jsonline"
 
-// The fields VictoriaLogs is told to read a record's time, message and
-// stream from. A stream is one program on one host, as one plugin saw it.
+// The fields VictoriaLogs is told to read a record's time and message
+// from, and the one a record's severity is written under.
 const (
 	timeField     = "_time"
 	messageField  = "_msg"
 	severityField = "severity_text"
-	streamFields  = jobLabel + ",host.name,service.name"
 )
 
 // own is how many names of a line are not the record's fields: the time,
@@ -37,7 +38,7 @@ var ErrLogsRefused = errors.New("the logs store refused the write")
 // nothing is batched, queued or tried again.
 type Logs struct {
 	client   *http.Client
-	endpoint string
+	endpoint *url.URL
 }
 
 // NewLogs returns a writer to the VictoriaLogs at base, its scheme and
@@ -52,14 +53,7 @@ func NewLogs(client *http.Client, base string) (*Logs, error) {
 		return nil, fmt.Errorf("the logs store's address: %w: %q", errNoHost, base)
 	}
 
-	endpoint := parsed.JoinPath(insertPath)
-	endpoint.RawQuery = url.Values{
-		"_time_field":    {timeField},
-		"_msg_field":     {messageField},
-		"_stream_fields": {streamFields},
-	}.Encode()
-
-	return &Logs{client: client, endpoint: endpoint.String()}, nil
+	return &Logs{client: client, endpoint: parsed.JoinPath(insertPath)}, nil
 }
 
 // For returns the writer a plugin is given: every record it writes carries
@@ -88,7 +82,7 @@ func (w *jobLogs) Write(ctx context.Context, records []plugin.Record) error {
 		body.WriteByte('\n')
 	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, w.logs.endpoint, &body)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, w.address(records), &body)
 	if err != nil {
 		return fmt.Errorf("writing logs: %w", err)
 	}
@@ -110,6 +104,30 @@ func (w *jobLogs) Write(ctx context.Context, records []plugin.Record) error {
 	}
 
 	return nil
+}
+
+// address is where records go: the store's ingestion API, told which
+// fields hold the time and the message, and which make a stream: the job,
+// and what the records themselves name.
+func (w *jobLogs) address(records []plugin.Record) string {
+	stream := []string{jobLabel}
+
+	for _, record := range records {
+		for _, name := range record.Stream {
+			if !slices.Contains(stream, name) {
+				stream = append(stream, name)
+			}
+		}
+	}
+
+	endpoint := *w.logs.endpoint
+	endpoint.RawQuery = url.Values{
+		"_time_field":    {timeField},
+		"_msg_field":     {messageField},
+		"_stream_fields": {strings.Join(stream, ",")},
+	}.Encode()
+
+	return endpoint.String()
 }
 
 // line is a record as the one flat object VictoriaLogs takes: its fields,

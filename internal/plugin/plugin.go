@@ -49,6 +49,12 @@ type Record struct {
 	Severity string
 	Body     string
 	Fields   []Field
+	// Stream names the fields the store groups records by, besides the
+	// plugin's own name: what tells one source of lines from another. They
+	// are to take few values, and none that whoever writes the lines
+	// chooses freely: a store keeps something for every stream it has
+	// seen.
+	Stream []string
 }
 
 // Field is one name and value of a record. The names are OpenTelemetry's
