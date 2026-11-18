@@ -866,6 +866,30 @@ func post(t *testing.T, method, address, path, kind, encoding string, body func(
 	return answer{}
 }
 
+// once sends one POST to the collector's OTLP port, which is open, and
+// returns what it was answered. Unlike post it fails no test itself, so it
+// may be called from a goroutine that is not the test's.
+func once(ctx context.Context, address, path, body string) (answer, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+address+path, strings.NewReader(body))
+	if err != nil {
+		return answer{}, err
+	}
+
+	response, err := (&http.Client{Timeout: patience}).Do(request)
+	if err != nil {
+		return answer{}, err
+	}
+
+	defer func() { _ = response.Body.Close() }()
+
+	said, err := io.ReadAll(response.Body)
+	if err != nil {
+		return answer{}, err
+	}
+
+	return answer{status: response.StatusCode, body: string(said)}, nil
+}
+
 // text is a body of that text, made anew each time it is asked for.
 func text(body string) func() io.Reader {
 	return func() io.Reader { return strings.NewReader(body) }
@@ -1164,9 +1188,19 @@ func TestARequestInFlightOutlivesTheStop(t *testing.T) {
 
 	hold.Store(true)
 
-	heard := make(chan answer, 1)
+	// Sent off the test's own goroutine, so by what fails no test.
+	type outcome struct {
+		said answer
+		err  error
+	}
 
-	go func() { heard <- post(t, http.MethodPost, address, "/v1/metrics", "", "", text("x")) }()
+	heard := make(chan outcome, 1)
+	ctx := t.Context()
+
+	go func() {
+		said, err := once(ctx, address, "/v1/metrics", "x")
+		heard <- outcome{said: said, err: err}
+	}()
 
 	select {
 	case <-arrived:
@@ -1181,9 +1215,9 @@ func TestARequestInFlightOutlivesTheStop(t *testing.T) {
 	close(release)
 
 	select {
-	case said := <-heard:
-		if said.status != http.StatusNoContent {
-			t.Errorf("the request in flight was answered %d %q", said.status, said.body)
+	case got := <-heard:
+		if got.err != nil || got.said.status != http.StatusNoContent {
+			t.Errorf("the request in flight was answered %d %q: %v", got.said.status, got.said.body, got.err)
 		}
 	case <-time.After(patience):
 		t.Fatal("the request in flight was never answered")
