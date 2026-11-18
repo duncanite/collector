@@ -48,7 +48,13 @@ func newRelay(client *http.Client, base, path string) (*Relay, error) {
 		return nil, fmt.Errorf("the store's address: %w: %q", errNoHost, base)
 	}
 
-	return &Relay{client: client, endpoint: parsed.JoinPath(path).String()}, nil
+	// A store does not redirect. One that did would have its target
+	// asked by the collector and that answer handed to the sender: the
+	// redirect itself is the answer instead, as any other is.
+	own := *client
+	own.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+	return &Relay{client: &own, endpoint: parsed.JoinPath(path).String()}, nil
 }
 
 // Relay sends one request on, its body streamed and never held, and
