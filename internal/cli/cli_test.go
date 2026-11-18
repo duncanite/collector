@@ -432,7 +432,16 @@ func TestUniFiSyslogReachesTheLogsStore(t *testing.T) {
 		"--unifi-syslog.location", "America/Los_Angeles",
 	)
 
-	got := send(t, st, address, "<14>Nov 15 15:54:49 Gateway Gateway mcad[4588]: the text\n")
+	// A line of this minute, stamped as a device in Los Angeles stamps it:
+	// to the second, with no year and no zone.
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sent := time.Now().In(location).Truncate(time.Second)
+
+	got := send(t, st, address, "<14>"+sent.Format(time.Stamp)+" Gateway Gateway mcad[4588]: the text\n")
 
 	if code, stderr := col.stop(t); code != cli.ExitOK {
 		t.Fatalf("exit = %d:\n%s", code, stderr)
@@ -443,7 +452,7 @@ func TestUniFiSyslogReachesTheLogsStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got.path != "/insert/jsonline" || query.Get("_stream_fields") != "job,host.name,service.name" ||
+	if got.path != "/insert/jsonline" || query.Get("_stream_fields") != "job,network.peer.address" ||
 		query.Get("_msg_field") != "_msg" || query.Get("_time_field") != "_time" {
 		t.Errorf("the write went to %q with %q", got.path, got.query)
 	}
@@ -469,10 +478,11 @@ func TestUniFiSyslogReachesTheLogsStore(t *testing.T) {
 		}
 	}
 
-	// The year is this one's: the line has none.
+	// The year and the zone are the reading's and the deployment's: the
+	// line has neither.
 	at, err := time.Parse(time.RFC3339Nano, line["_time"])
-	if err != nil || at.Month() != time.November || at.Day() != 15 || at.Hour() != 23 || at.Minute() != 54 {
-		t.Errorf("_time is %q: %v", line["_time"], err)
+	if err != nil || !at.Equal(sent) {
+		t.Errorf("_time is %q, want %s: %v", line["_time"], sent.UTC().Format(time.RFC3339), err)
 	}
 }
 

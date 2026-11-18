@@ -38,16 +38,33 @@ misconfigured stops the collector at its start; a source that does not answer do
 Metrics go to VictoriaMetrics' import API in the Prometheus text format, one request per
 read, each sample labelled with its plugin's name as `job`. Logs go to VictoriaLogs' JSON
 lines API, one request per line, under OpenTelemetry's names where it has one (`host.name`,
-`service.name`, `process.pid`), in one stream per program per host per plugin. While a
+`service.name`, `process.pid`), in the streams each plugin names. While a
 store is down, everything meant for it in that time is lost; a deployment names the stores
 its plugins need with `--metrics-url` and `--logs-url`, and a plugin whose store is not
 named refuses to run.
 
-`unifi-syslog` trusts nothing in a line: the lines come over plain UDP with nothing to say
-who sent them, so the sender's address is kept on every record, and a line of a shape
-nobody mapped is stored with its text whole. Its parser is fuzzed (`FuzzParse`), and its
-fixtures, `internal/plugins/unifisyslog/testdata`, hold one line per shape a device sends,
-every name and address in them a placeholder.
+`unifi-syslog` takes lines over plain UDP, with nothing to say who sent them: whoever
+reaches its port writes into the logs store. What a line can make of its record is
+bounded, and what is not is said here:
+
+- The sender's address is kept on every record, and is the one thing the store groups
+  the plugin's lines by: a line names its own host and program, so those are fields and
+  never a stream.
+- A record is dated by its line when the line says it happened within a day of its
+  reading, and by its reading otherwise. The same holds for a console event's own time.
+- A console event gives as many fields as the console writes, sixty-four at most; one
+  with more keeps its text whole. Every other line gives a fixed handful.
+- What is not UTF-8, and every control character but the tab and the line feed, is
+  replaced.
+- A line of a shape nobody mapped is stored with its text whole.
+
+Not bounded: who sends (https://github.com/duncanite/collector/issues/13), how many lines,
+and what they say. A host name, a program, a firewall policy and every value are the
+line's own word.
+
+Its parser is fuzzed (`FuzzParse`), and its fixtures,
+`internal/plugins/unifisyslog/testdata`, hold one line per shape a device sends, every name
+and address in them a placeholder.
 
 ## Working on it
 
