@@ -148,6 +148,8 @@ type cefExtension struct {
 
 // cefExtensions reads "key=value key=value": a value runs to the next key,
 // so it may hold spaces, and its "\=", "\\", "\n" and "\r" are unescaped.
+// Both of the last two become a line feed: CEF means a new line by either,
+// and a carriage return is a control character no record holds.
 func cefExtensions(text string) []cefExtension {
 	starts := cefKey.FindAllStringSubmatchIndex(text, -1)
 	extensions := make([]cefExtension, 0, len(starts))
@@ -168,4 +170,4 @@ func cefExtensions(text string) []cefExtension {
 }
 
 //nolint:gochecknoglobals // a replacer is built once
-var cefUnescape = strings.NewReplacer(`\=`, `=`, `\\`, `\`, `\n`, "\n", `\r`, "\r")
+var cefUnescape = strings.NewReplacer(`\=`, `=`, `\\`, `\`, `\n`, "\n", `\r`, "\n")

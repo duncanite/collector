@@ -310,6 +310,21 @@ func TestWhatAPrinterWouldObeyIsReplaced(t *testing.T) {
 	}
 }
 
+func TestAnEventsEscapedNewLinesAreLineFeeds(t *testing.T) {
+	t.Parallel()
+
+	received, location := when(t)
+
+	record := unifisyslog.Parse(
+		[]byte(`Nov 15 19:59:00 Gateway CEF:0|a|b|c|d|e|1|note=one\rtwo\nthree msg=first\r\nsecond`),
+		sender, received, location,
+	)
+
+	if record.Body != "first\n\nsecond" || field(record, "cef.extensions.note") != "one\ntwo\nthree" {
+		t.Errorf("body %q, note %q", record.Body, field(record, "cef.extensions.note"))
+	}
+}
+
 func TestARecordIsGroupedByItsSenderAndNothingOfTheLine(t *testing.T) {
 	t.Parallel()
 
@@ -337,6 +352,7 @@ func FuzzParse(f *testing.F) {
 		"<14>Feb 29 12:00:00 Gateway x: y",
 		"<14>Jan  1 00:00:12 Ga\x1b[2Jte prog\x00[7]: one\x7f",
 		"Nov 15 19:59:00 Gateway CEF:0|a|b|c|d|e|1|" + strings.Repeat("k=v ", 200),
+		`Nov 15 19:59:00 Gateway CEF:0|a|b|c|d|e|1|note=one\rtwo msg=first\r\nsecond`,
 	} {
 		f.Add([]byte(datagram))
 	}
