@@ -561,17 +561,28 @@ func TestWhatADeploymentGetsWrongForSyslog(t *testing.T) {
 func unifiConsole(t *testing.T, st *store) []string {
 	t.Helper()
 
-	data, err := xos.ReadFile(filepath.Join("testdata", "unifi-devices.json"))
-	if err != nil {
-		t.Fatal(err)
+	// The console's three reports, each from its file.
+	held := map[string][]map[string]any{}
+
+	for collection, file := range map[string]string{
+		"device": "unifi-devices.json",
+		"sta":    "unifi-clients.json",
+		"health": "unifi-health.json",
+	} {
+		data, err := xos.ReadFile(filepath.Join("testdata", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var docs []map[string]any
+		if err := json.Unmarshal(data, &docs); err != nil {
+			t.Fatal(err)
+		}
+
+		held[collection] = docs
 	}
 
-	var devices []map[string]any
-	if err := json.Unmarshal(data, &devices); err != nil {
-		t.Fatal(err)
-	}
-
-	fake := consoletest.New(map[string][]map[string]any{"device": devices})
+	fake := consoletest.New(held)
 	t.Cleanup(fake.Close)
 
 	pin := sha256.Sum256(fake.Certificate().Raw)
