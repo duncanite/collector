@@ -3,7 +3,9 @@ package unifi
 import (
 	"encoding/json"
 	"math"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/duncanite/go-unifi/console"
@@ -46,32 +48,126 @@ func (s *series) flag(metric string, doc map[string]any, key string, labels []pl
 	}
 }
 
-// samples is the console's device list as series.
-func samples(docs []console.Document, now time.Time) []plugin.Sample {
+// samples is one reading of the console as series.
+func samples(read reading, now time.Time) []plugin.Sample {
 	all := &series{now: now}
 	all.add("unifi_up", 1, nil)
 
-	// A console lets two devices carry one name; their series would be
-	// one series written twice.
-	named := make(map[string]int, len(docs))
-	for _, doc := range docs {
-		named[text(doc["name"])]++
+	for index, called := range names(read.devices, "name") {
+		device(all, read.devices[index], called, text(read.devices[index]["mac"]))
 	}
 
-	for _, doc := range docs {
-		mac := text(doc["mac"])
+	// A client is called what its owner called it, or what it calls
+	// itself.
+	for index, called := range names(read.clients, "name", "hostname") {
+		station(all, read.clients[index], called, text(read.clients[index]["mac"]))
+	}
 
-		called := text(doc["name"])
-		if called == "" || named[called] > 1 {
-			// A device nobody named, or named like another, is known by
-			// its address.
-			called = mac
-		}
-
-		device(all, doc, called, mac)
+	for _, doc := range read.health {
+		subsystem(all, doc)
 	}
 
 	return all.out
+}
+
+// names is what each document is called: the first of keys it holds, or
+// its MAC when it holds none, or when another is called the same. A
+// console keeps no two names apart, and two documents of one name would
+// be one series written twice.
+func names(docs []console.Document, keys ...string) []string {
+	called := make([]string, len(docs))
+	count := make(map[string]int, len(docs))
+
+	for index, doc := range docs {
+		for _, key := range keys {
+			if called[index] = text(doc[key]); called[index] != "" {
+				break
+			}
+		}
+
+		count[called[index]]++
+	}
+
+	for index, doc := range docs {
+		if called[index] == "" || count[called[index]] > 1 {
+			called[index] = text(doc["mac"])
+		}
+	}
+
+	return called
+}
+
+// station is one client's document. A wireless client has a signal and a
+// rate; a wired one has its link's speed, and its traffic under keys of
+// its own. The bytes are the console's count, from where it stands:
+// received is what the client sent.
+func station(all *series, doc map[string]any, called, mac string) {
+	labels := []plugin.Label{{Name: "client", Value: called}}
+	// A client that does not say is wireless, as the console leaves it.
+	wired := truth(doc["is_wired"])
+
+	// Where it is attached: the network, the device it hangs off, and for
+	// a wireless one the name of the WiFi and the radio. What the console
+	// does not say is left off.
+	about := []plugin.Label{
+		{Name: "client", Value: called},
+		{Name: "mac", Value: mac},
+		{Name: "wired", Value: strconv.FormatBool(wired)},
+	}
+
+	for label, key := range map[string]string{
+		"network": "network", "uplink": "last_uplink_name", "essid": "essid", "radio": "radio",
+	} {
+		if value := text(doc[key]); value != "" {
+			about = append(about, plugin.Label{Name: label, Value: value})
+		}
+	}
+
+	slices.SortStableFunc(about[3:], func(a, b plugin.Label) int { return strings.Compare(a.Name, b.Name) })
+	all.add("unifi_client_info", 1, about)
+
+	all.from("unifi_client_uptime_seconds", doc, "uptime", labels)
+	all.from("unifi_client_satisfaction_percent", doc, "satisfaction", labels)
+
+	if wired {
+		all.from("unifi_client_link_mbps", doc, "wired_rate_mbps", labels)
+		all.from("unifi_client_receive_bytes_total", doc, "wired-rx_bytes", labels)
+		all.from("unifi_client_transmit_bytes_total", doc, "wired-tx_bytes", labels)
+
+		return
+	}
+
+	all.from("unifi_client_signal_dbm", doc, "signal", labels)
+	all.from("unifi_client_noise_dbm", doc, "noise", labels)
+	all.from("unifi_client_receive_rate_kbps", doc, "rx_rate", labels)
+	all.from("unifi_client_transmit_rate_kbps", doc, "tx_rate", labels)
+	all.from("unifi_client_retries_percent", doc, "wifi_tx_retries_percentage", labels)
+	all.from("unifi_client_receive_bytes_total", doc, "rx_bytes", labels)
+	all.from("unifi_client_transmit_bytes_total", doc, "tx_bytes", labels)
+}
+
+// subsystem is the console's verdict on one of its subsystems: the uplink
+// (wan), the internet behind it (www), the wireless and the wired networks
+// (wlan, lan), the VPN. Each holds the counts and measures that mean
+// something for it, and none of the others'.
+func subsystem(all *series, doc map[string]any) {
+	labels := []plugin.Label{{Name: "subsystem", Value: text(doc["subsystem"])}}
+
+	// "unknown" is a subsystem the house does not have: no verdict, and
+	// not a bad one.
+	if status := text(doc["status"]); status != "" && status != "unknown" {
+		all.add("unifi_health_ok", flag01(status == "ok"), labels)
+	}
+
+	all.from("unifi_health_clients", doc, "num_sta", labels)
+	all.from("unifi_health_users", doc, "num_user", labels)
+	all.from("unifi_health_guests", doc, "num_guest", labels)
+	all.from("unifi_health_adopted", doc, "num_adopted", labels)
+	all.from("unifi_health_disconnected", doc, "num_disconnected", labels)
+	all.from("unifi_health_pending", doc, "num_pending", labels)
+	all.from("unifi_health_latency_milliseconds", doc, "latency", labels)
+	all.from("unifi_health_drops", doc, "drops", labels)
+	all.from("unifi_health_uptime_seconds", doc, "uptime", labels)
 }
 
 // device is one device's document: the gateway, a switch or an access
@@ -212,6 +308,13 @@ func number(value any) (float64, bool) {
 	}
 
 	return parsed, true
+}
+
+// truth is the boolean in value, false when it holds none.
+func truth(value any) bool {
+	held, ok := value.(bool)
+
+	return ok && held
 }
 
 // text is the string in value, or none.

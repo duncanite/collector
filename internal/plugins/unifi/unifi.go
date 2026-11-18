@@ -1,9 +1,10 @@
 // Package unifi is the plugin for a UniFi Network console: on a timer it
 // asks the console for its devices, the gateway, the switches and the
-// access points, and writes what the console knows of each as metrics.
+// access points, for the clients it sees and for its own verdict on its
+// subsystems, and writes what the console knows of each as metrics.
 //
-// It reads and never writes: one GET of the device list per interval, with
-// an API key the console minted.
+// It reads and never writes: three GETs per interval, with an API key the
+// console minted.
 package unifi
 
 import (
@@ -137,13 +138,14 @@ func deviceList() (console.Kind, error) {
 }
 
 // poll reads the console once and writes what it read, or that it could
-// not.
+// not. The three reads are one: a console that gives its devices and not
+// its clients is written as not read, rather than as a house with none.
 func poll(ctx context.Context, out plugin.Output, client *console.Client, devices console.Kind) {
 	now := time.Now()
 
 	var written []plugin.Sample
 
-	docs, err := client.List(ctx, devices)
+	read, err := report(ctx, client, devices)
 
 	switch {
 	case ctx.Err() != nil:
@@ -153,10 +155,40 @@ func poll(ctx context.Context, out plugin.Output, client *console.Client, device
 
 		written = []plugin.Sample{{Name: "unifi_up", Value: 0, Time: now}}
 	default:
-		written = samples(docs, now)
+		written = samples(read, now)
 	}
 
 	if err := out.Metrics.Write(ctx, written); err != nil && ctx.Err() == nil {
 		slog.WarnContext(ctx, "the console's metrics were not stored and are lost", "plugin", name, "error", err)
 	}
+}
+
+// reading is what one read of the console gives: its devices, the clients
+// it sees, and its verdict on each of its subsystems.
+type reading struct {
+	devices []console.Document
+	clients []console.Document
+	health  []console.Document
+}
+
+// report asks the console for the three.
+func report(ctx context.Context, client *console.Client, devices console.Kind) (reading, error) {
+	var (
+		read reading
+		err  error
+	)
+
+	if read.devices, err = client.List(ctx, devices); err != nil {
+		return reading{}, fmt.Errorf("its devices: %w", err)
+	}
+
+	if read.clients, err = client.Clients(ctx); err != nil {
+		return reading{}, fmt.Errorf("its clients: %w", err)
+	}
+
+	if read.health, err = client.Health(ctx); err != nil {
+		return reading{}, fmt.Errorf("its health: %w", err)
+	}
+
+	return read, nil
 }
