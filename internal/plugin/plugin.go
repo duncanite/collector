@@ -5,6 +5,7 @@ package plugin
 import (
 	"context"
 	"flag"
+	"io"
 	"time"
 )
 
@@ -31,6 +32,37 @@ type Plugin interface {
 type Output struct {
 	Metrics MetricWriter
 	Logs    LogWriter
+	// MetricsRelay and LogsRelay take a source's own OpenTelemetry
+	// requests on to the stores, unread.
+	MetricsRelay Relay
+	LogsRelay    Relay
+}
+
+// Relay takes OpenTelemetry requests to one store as they came.
+type Relay interface {
+	// Relay sends one request on and returns what the store answered,
+	// whatever it answered. An error means the store was not reached, or
+	// the request's body could not be read to its end.
+	Relay(ctx context.Context, request Request) (Answer, error)
+}
+
+// Request is one OTLP request as its sender made it: its body, and what
+// the sender said the body is.
+type Request struct {
+	ContentType     string
+	ContentEncoding string
+	// Length is the body's length in bytes, or -1 when the sender did not
+	// say.
+	Length int64
+	Body   io.Reader
+}
+
+// Answer is what a store said to a request: its status, and the head of
+// its body.
+type Answer struct {
+	Status      int
+	ContentType string
+	Body        []byte
 }
 
 // LogWriter takes records to the logs store.

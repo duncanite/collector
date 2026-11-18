@@ -26,6 +26,7 @@ import (
 
 	"github.com/duncanite/collector/internal/cli"
 	"github.com/duncanite/collector/internal/plugins/arris"
+	"github.com/duncanite/collector/internal/plugins/otlp"
 	"github.com/duncanite/collector/internal/plugins/unifi"
 	"github.com/duncanite/collector/internal/plugins/unifisyslog"
 )
@@ -46,9 +47,11 @@ func TestMain(m *testing.M) {
 
 // write is one request a store received.
 type write struct {
-	path  string
-	query string
-	body  string
+	path     string
+	query    string
+	body     string
+	kind     string
+	encoding string
 }
 
 // store stands for VictoriaMetrics: it keeps the writes it is sent, and
@@ -90,7 +93,10 @@ func newStore(t *testing.T, refuse int) *store {
 			w.WriteHeader(http.StatusNoContent)
 		}
 
-		st.writes <- write{path: r.URL.Path, query: r.URL.RawQuery, body: string(body)}
+		st.writes <- write{
+			path: r.URL.Path, query: r.URL.RawQuery, body: string(body),
+			kind: r.Header.Get("Content-Type"), encoding: r.Header.Get("Content-Encoding"),
+		}
 	}))
 	t.Cleanup(st.server.Close)
 
@@ -124,7 +130,9 @@ func start(t *testing.T, args ...string) *collector {
 	ctx, cancel := context.WithCancel(t.Context())
 	col := &collector{cancel: cancel, done: make(chan int, 1), stderr: &bytes.Buffer{}}
 
-	go func() { col.done <- cli.Run(ctx, args, col.stderr, arris.New(), unifi.New(), unifisyslog.New()) }()
+	go func() {
+		col.done <- cli.Run(ctx, args, col.stderr, arris.New(), otlp.New(), unifi.New(), unifisyslog.New())
+	}()
 
 	t.Cleanup(cancel)
 
@@ -776,5 +784,269 @@ func TestAListenerInTheClearIsNeverSentTheKey(t *testing.T) {
 	case key := <-asked:
 		t.Errorf("a listener in the clear was sent a request, with the key %q", key)
 	default:
+	}
+}
+
+// listeningTCP is a TCP address nothing listens on yet.
+func listeningTCP(t *testing.T) string {
+	t.Helper()
+
+	var config net.ListenConfig
+
+	listener, err := config.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	address := listener.Addr().String()
+
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	return address
+}
+
+// answer is what the collector said to one request.
+type answer struct {
+	status int
+	body   string
+}
+
+// post sends one request to the collector's OTLP port, waiting for the
+// port to open, and returns what it was answered. body makes the request's
+// body anew for each try.
+func post(t *testing.T, method, address, path, kind, encoding string, body func() io.Reader) answer {
+	t.Helper()
+
+	client := &http.Client{Timeout: patience}
+
+	for deadline := time.Now().Add(patience); time.Now().Before(deadline); {
+		var sent io.Reader
+		if body != nil {
+			sent = body()
+		}
+
+		request, err := http.NewRequestWithContext(t.Context(), method, "http://"+address+path, sent)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if kind != "" {
+			request.Header.Set("Content-Type", kind)
+		}
+
+		if encoding != "" {
+			request.Header.Set("Content-Encoding", encoding)
+		}
+
+		response, err := client.Do(request)
+		if err != nil {
+			// The port is not open yet.
+			time.Sleep(50 * time.Millisecond)
+
+			continue
+		}
+
+		said, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := response.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		return answer{status: response.StatusCode, body: string(said)}
+	}
+
+	t.Fatal("the OTLP port never opened")
+
+	return answer{}
+}
+
+// text is a body of that text, made anew each time it is asked for.
+func text(body string) func() io.Reader {
+	return func() io.Reader { return strings.NewReader(body) }
+}
+
+func TestOTLPIsPassedOnToTheStoreForItsSignal(t *testing.T) {
+	t.Parallel()
+
+	metrics, logs := newStore(t, 0), newStore(t, 0)
+	address := listeningTCP(t)
+
+	col := start(t,
+		"--enable", "otlp",
+		"--metrics-url", metrics.server.URL,
+		"--logs-url", logs.server.URL,
+		"--otlp.listen", address,
+	)
+
+	// Not OTLP at all: the collector does not read what it passes on.
+	const payload = "\x0a\x00not a protobuf\xff\x00, and passed on all the same"
+
+	for name, test := range map[string]struct {
+		path  string
+		store *store
+		want  string
+	}{
+		"metrics": {"/v1/metrics", metrics, "/opentelemetry/v1/metrics"},
+		"logs":    {"/v1/logs", logs, "/insert/opentelemetry/v1/logs"},
+	} {
+		said := post(t, http.MethodPost, address, test.path, "application/x-protobuf", "gzip", text(payload))
+		got := test.store.next(t)
+
+		if said.status != http.StatusNoContent {
+			t.Errorf("%s: answered %d %q", name, said.status, said.body)
+		}
+
+		if got.path != test.want || got.body != payload || got.kind != "application/x-protobuf" ||
+			got.encoding != "gzip" {
+			t.Errorf("%s: the store was sent %q to %q as %q, %q", name, got.body, got.path, got.kind, got.encoding)
+		}
+	}
+
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+
+	// Each store was sent its own signal and nothing else.
+	for name, st := range map[string]*store{"metrics": metrics, "logs": logs} {
+		select {
+		case got := <-st.writes:
+			t.Errorf("the %s store was sent more: %q", name, got.path)
+		default:
+		}
+	}
+}
+
+func TestWhatAStoreAnswersIsWhatTheSenderHears(t *testing.T) {
+	t.Parallel()
+
+	// The store refuses the first request and takes the second.
+	st := newStore(t, 1)
+	address := listeningTCP(t)
+
+	col := start(t, "--enable", "otlp", "--metrics-url", st.server.URL, "--otlp.listen", address)
+
+	said := post(t, http.MethodPost, address, "/v1/metrics", "application/json", "", text("{}"))
+	if said.status != http.StatusInternalServerError || !strings.Contains(said.body, "no room") {
+		t.Errorf("a refusal was passed back as %d %q", said.status, said.body)
+	}
+
+	st.next(t)
+
+	// Nothing is tried again: the sender heard, and what it does is its own.
+	select {
+	case got := <-st.writes:
+		t.Errorf("a refused request was sent again: %q", got.body)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	said = post(t, http.MethodPost, address, "/v1/metrics", "application/json", "", text("{}"))
+	if said.status != http.StatusNoContent {
+		t.Errorf("the next request was answered %d %q", said.status, said.body)
+	}
+
+	st.next(t)
+
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+}
+
+func TestWhatTheOTLPPortDoesNotTake(t *testing.T) {
+	t.Parallel()
+
+	st := newStore(t, 0)
+	address := listeningTCP(t)
+
+	// A deployment with a metrics store and no logs store.
+	col := start(t, "--enable", "otlp", "--metrics-url", st.server.URL, "--otlp.listen", address)
+
+	// Larger than is passed on, with its length said and without.
+	const large = 17 << 20
+
+	hidden := func() io.Reader { return io.MultiReader(strings.NewReader(strings.Repeat("x", large))) }
+
+	for name, test := range map[string]struct {
+		method string
+		path   string
+		body   func() io.Reader
+		want   int
+	}{
+		"a signal with no store":    {http.MethodPost, "/v1/logs", text("x"), http.StatusNotFound},
+		"a signal nobody stores":    {http.MethodPost, "/v1/traces", text("x"), http.StatusNotFound},
+		"another path":              {http.MethodPost, "/api/v1/import/prometheus", text("x"), http.StatusNotFound},
+		"a read":                    {http.MethodGet, "/v1/metrics", nil, http.StatusMethodNotAllowed},
+		"a body too large":          {http.MethodPost, "/v1/metrics", text(strings.Repeat("x", large)), http.StatusRequestEntityTooLarge},
+		"one that hides its length": {http.MethodPost, "/v1/metrics", hidden, http.StatusRequestEntityTooLarge},
+	} {
+		said := post(t, test.method, address, test.path, "application/x-protobuf", "", test.body)
+		if said.status != test.want {
+			t.Errorf("%s: answered %d %q, want %d", name, said.status, said.body, test.want)
+		}
+	}
+
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+
+	// Of all that, the store saw at most the head of the body that hid its
+	// length: a body is passed on as it comes, and cut when it is too long.
+	for more := true; more; {
+		select {
+		case got := <-st.writes:
+			if got.path != "/opentelemetry/v1/metrics" || len(got.body) >= large {
+				t.Errorf("the store was sent %d bytes to %q", len(got.body), got.path)
+			}
+		default:
+			more = false
+		}
+	}
+}
+
+func TestAStoreThatIsGoneIsABadGateway(t *testing.T) {
+	t.Parallel()
+
+	st := newStore(t, 0)
+	gone := st.server.URL
+	st.server.Close()
+
+	address := listeningTCP(t)
+	col := start(t, "--enable", "otlp", "--metrics-url", gone, "--otlp.listen", address)
+
+	said := post(t, http.MethodPost, address, "/v1/metrics", "", "", text("x"))
+	if said.status != http.StatusBadGateway {
+		t.Errorf("answered %d %q", said.status, said.body)
+	}
+
+	// The collector goes on.
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+}
+
+func TestWhatADeploymentGetsWrongForOTLP(t *testing.T) {
+	t.Parallel()
+
+	st := newStore(t, 0)
+
+	for name, test := range map[string]struct {
+		args []string
+		says string
+	}{
+		"no store":   {[]string{"--enable", "otlp", "--otlp.listen", "127.0.0.1:0"}, "otlp: it relays to the stores"},
+		"no address": {[]string{"--enable", "otlp", "--metrics-url", st.server.URL}, "otlp: --otlp.listen is empty"},
+		"an address that is none": {
+			[]string{"--enable", "otlp", "--metrics-url", st.server.URL, "--otlp.listen", "nowhere"},
+			"otlp: --otlp.listen:",
+		},
+	} {
+		code, stderr := start(t, test.args...).wait(t)
+		if code != cli.ExitError || !strings.Contains(stderr, test.says) {
+			t.Errorf("%s: exit = %d, want %d and %q:\n%s", name, code, cli.ExitError, test.says, stderr)
+		}
 	}
 }
