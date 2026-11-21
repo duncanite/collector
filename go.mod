@@ -3,7 +3,7 @@ module github.com/duncanite/collector
 go 1.26.0
 
 require (
-	github.com/duncanite/go-arris v0.0.0-20261114234939-a022dc7df22d
+	github.com/duncanite/go-arris v0.0.0-20261118151518-bb7eee99d89e
 	github.com/duncanite/go-unifi v0.1.0
 	github.com/forkcloser/xos v0.1.1
 	github.com/mycophonic/primordium v0.15.1
