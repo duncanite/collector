@@ -688,6 +688,15 @@ func TestWhatADeploymentGetsWrongForFlows(t *testing.T) {
 func unifiConsole(t *testing.T, st *store) []string {
 	t.Helper()
 
+	return unifiConsoleBehind(t, st, nil)
+}
+
+// unifiConsoleBehind is unifiConsole with front, when it is not nil,
+// between the collector and the console: what front does not answer
+// itself it hands on.
+func unifiConsoleBehind(t *testing.T, st *store, front func(console http.Handler) http.Handler) []string {
+	t.Helper()
+
 	// The console's three reports, each from its file.
 	held := map[string][]map[string]any{}
 
@@ -712,12 +721,18 @@ func unifiConsole(t *testing.T, st *store) []string {
 	fake := consoletest.New(held)
 	t.Cleanup(fake.Close)
 
-	pin := sha256.Sum256(fake.Certificate().Raw)
+	reached := fake.Server
+	if front != nil {
+		reached = httptest.NewTLSServer(front(fake.Config.Handler))
+		t.Cleanup(reached.Close)
+	}
+
+	pin := sha256.Sum256(reached.Certificate().Raw)
 
 	return []string{
 		"--enable", "unifi",
 		"--metrics-url", st.server.URL,
-		"--unifi.host", strings.TrimPrefix(fake.URL, "https://"),
+		"--unifi.host", strings.TrimPrefix(reached.URL, "https://"),
 		"--unifi.fingerprint", hex.EncodeToString(pin[:]),
 		"--unifi.interval", "1h",
 	}
@@ -774,6 +789,37 @@ func TestAConsoleThatRefusesIsWrittenAsDown(t *testing.T) {
 
 	if code, stderr := col.stop(t); code != cli.ExitOK {
 		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+}
+
+// TestAConsoleReadInPartIsWrittenAsDown: the three reads are one. A
+// console that fails any of them is written as not read and nothing
+// else, not as a house with no devices, no clients or no verdict.
+func TestAConsoleReadInPartIsWrittenAsDown(t *testing.T) {
+	t.Setenv("UNIFI_API_KEY", consoletest.APIKey)
+
+	for _, lost := range []string{"/stat/device", "/stat/sta", "/stat/health"} {
+		st := newStore(t, 0)
+
+		col := start(t, unifiConsoleBehind(t, st, func(console http.Handler) http.Handler {
+			return http.HandlerFunc(func(writer http.ResponseWriter, req *http.Request) {
+				if strings.HasSuffix(req.URL.Path, lost) {
+					http.Error(writer, "not now", http.StatusServiceUnavailable)
+
+					return
+				}
+
+				console.ServeHTTP(writer, req)
+			})
+		})...)
+
+		if got := untimed(t, st.next(t).body); got != "unifi_up{job=\"unifi\"} 0\n" {
+			t.Errorf("without %s the metrics store was sent:\n%s", lost, got)
+		}
+
+		if code, stderr := col.stop(t); code != cli.ExitOK {
+			t.Fatalf("without %s: exit = %d:\n%s", lost, code, stderr)
+		}
 	}
 }
 
