@@ -332,12 +332,20 @@ func TestANameItsTellerNoLongerStandsByIsNotWritten(t *testing.T) {
 	reader := ipfix.NewReader()
 	reader.Name(names)
 
+	// The flow says it ended a minute before, when the word still stood:
+	// its date is the exporter's to say, and a name is asked at the reading.
+	ended := received().Add(-time.Minute)
+
 	records := read(t, reader, message(t, received(), 0,
-		template(t, 256, 8, 4, 12, 4),
-		set(t, 256, addr("192.0.2.7"), addr("198.51.100.9")),
+		template(t, 256, 8, 4, 12, 4, 153, 8),
+		set(t, 256, addr("192.0.2.7"), addr("198.51.100.9"), uint64(ended.UnixMilli())),
 	))
 	if len(records) != 1 {
 		t.Fatalf("%d records, want the one", len(records))
+	}
+
+	if !records[0].Time.Equal(ended) {
+		t.Fatalf("the flow is dated %s, want its own end, %s", records[0].Time, ended)
 	}
 
 	if got, written := fields(records[0])["source.name"]; written {
@@ -345,14 +353,14 @@ func TestANameItsTellerNoLongerStandsByIsNotWritten(t *testing.T) {
 	}
 }
 
-// TestANameIsCutAndCleanedAsAnyText reads a flow of a host that calls
-// itself by an escape sequence and four hundred letters: a host chooses its
-// own name, and what it chose is not handed on as it came.
-func TestANameIsCutAndCleanedAsAnyText(t *testing.T) {
+// TestANameIsWrittenFitToBeShown reads a flow of a host that calls itself
+// by a tag: a host chooses its own name, and the flow carries it as the
+// names hold it, with no markup left.
+func TestANameIsWrittenFitToBeShown(t *testing.T) {
 	t.Parallel()
 
 	names := plugin.NewNames()
-	names.Tell("console", map[netip.Addr]string{addr("192.0.2.7"): "\x1b[31m" + strings.Repeat("a", 400)}, received())
+	names.Tell("console", map[netip.Addr]string{addr("192.0.2.7"): "<img src=x onerror=alert(1)>"}, received())
 
 	reader := ipfix.NewReader()
 	reader.Name(names)
@@ -365,8 +373,7 @@ func TestANameIsCutAndCleanedAsAnyText(t *testing.T) {
 		t.Fatalf("%d records, want the one", len(records))
 	}
 
-	// 256 octets of the name are read: the escape, then "[31m" and 251 letters.
-	if want := "\uFFFD[31m" + strings.Repeat("a", 251); fields(records[0])["source.name"] != want {
+	if want := "(img src=x onerror=alert(1))"; fields(records[0])["source.name"] != want {
 		t.Errorf("the source is named %q, want %q", fields(records[0])["source.name"], want)
 	}
 }

@@ -2,6 +2,7 @@ package plugin_test
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,5 +122,64 @@ func TestNoNamesAtAllKnowNobodyAndTakeNothing(t *testing.T) {
 
 	if got := names.Of(at("192.0.2.7"), noon()); got != "" {
 		t.Errorf("with no names the address is %q", got)
+	}
+}
+
+func TestANameIsMadeFitToBeShown(t *testing.T) {
+	t.Parallel()
+
+	for told, want := range map[string]string{
+		"Laptop":                       "Laptop",
+		"Salon – télé 📺":               "Salon – télé 📺",
+		"<img src=x onerror=alert(1)>": "(img src=x onerror=alert(1))",
+		"</b><script>x</script>":       "(/b)(script)x(/script)",
+		"Mum & Dad":                    "Mum + Dad",
+		"&lt;b&gt;":                    "+lt;b+gt;",
+		"two\nlines\tand a tab":        "two\uFFFDlines\uFFFDand a tab",
+		"\x1b[31mred\x00":              "\uFFFD[31mred\uFFFD",
+		"right\u202Eto left":           "right\uFFFDto left",
+		"line\u2028and\u2029paragraph": "line\uFFFDand\uFFFDparagraph",
+		"zero\u200Bwidth":              "zero\uFFFDwidth",
+		"tagged\U000E0041":             "tagged\uFFFD",
+		"not \xff text":                "not \uFFFD text",
+		"":                             "",
+	} {
+		if got := plugin.Name(told); got != want {
+			t.Errorf("Name(%q) = %q, want %q", told, got, want)
+		}
+	}
+}
+
+func TestANameIsCutOnACharacter(t *testing.T) {
+	t.Parallel()
+
+	// Exactly as long as a name may be, and whole.
+	if whole := strings.Repeat("a", 256); plugin.Name(whole) != whole {
+		t.Errorf("a name of 256 octets is cut: %q", plugin.Name(whole))
+	}
+
+	if got := plugin.Name(strings.Repeat("a", 257)); got != strings.Repeat("a", 256) {
+		t.Errorf("a name of 257 octets is %d long, want 256", len(got))
+	}
+
+	// "é" is two octets: the one that would straddle the end is left out.
+	if got := plugin.Name(strings.Repeat("a", 255) + "é"); got != strings.Repeat("a", 255) {
+		t.Errorf("a name cut through a character ends %q, %d octets", got[len(got)-2:], len(got))
+	}
+
+	// A control character is three octets once replaced: the cut is of what is kept.
+	if got := plugin.Name(strings.Repeat("\x00", 100)); got != strings.Repeat("\uFFFD", 85) {
+		t.Errorf("a hundred control characters are %d octets, want 85 marks", len(got))
+	}
+}
+
+func TestWhatIsToldIsKeptFitToBeShown(t *testing.T) {
+	t.Parallel()
+
+	names := plugin.NewNames()
+	names.Tell("console", map[netip.Addr]string{at("192.0.2.7"): "<b>bold</b>"}, noon())
+
+	if got := names.Of(at("192.0.2.7"), noon()); got != "(b)bold(/b)" {
+		t.Errorf("the address is %q, want (b)bold(/b)", got)
 	}
 }

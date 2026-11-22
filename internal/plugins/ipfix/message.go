@@ -504,15 +504,14 @@ func (f *flow) record(from *message, number uint16) plugin.Record {
 		}
 	}
 
-	// A name is text someone else chose, a host's own name for one: cut
-	// and cleaned as a string of the exporter's is.
+	// Who each end is at the reading, which is when the names were told
+	// for: the flow's own date is the exporter's word. A name comes fit
+	// to be shown, as whatever told it left it.
 	for _, side := range [...]struct {
 		name string
 		at   netip.Addr
 	}{{sourceName, f.sourceAt}, {destinationName, f.destinationAt}} {
-		called, _ := text.read([]byte(from.reader.names.Of(side.at, from.received)))
-
-		f.field(side.name, called)
+		f.field(side.name, from.reader.names.Of(side.at, from.received))
 	}
 
 	f.field(peer, from.exporter.Addr().Unmap().String())

@@ -123,7 +123,7 @@ func (p *Plugin) Run(ctx context.Context, out plugin.Output) error {
 	defer ticker.Stop()
 
 	for {
-		poll(ctx, out, client, devices, stands*p.interval)
+		poll(ctx, out, client, devices, p.interval)
 
 		select {
 		case <-ctx.Done():
@@ -147,10 +147,16 @@ func deviceList() (console.Kind, error) {
 // poll reads the console once and writes what it read, or that it could
 // not. The three reads are one: a console that gives its devices and not
 // its clients is written as not read, rather than as a house with none.
-// What it read also tells the other plugins who each address is, for as
-// long as good; a read that failed tells nothing, and the names of the
-// last one stand until their time.
-func poll(ctx context.Context, out plugin.Output, client *console.Client, devices console.Kind, good time.Duration) {
+// What it read also tells the other plugins who each address is; a read
+// that failed tells nothing, and the names of the last one stand until
+// their time.
+func poll(
+	ctx context.Context,
+	out plugin.Output,
+	client *console.Client,
+	devices console.Kind,
+	interval time.Duration,
+) {
 	now := time.Now()
 
 	var written []plugin.Sample
@@ -167,7 +173,7 @@ func poll(ctx context.Context, out plugin.Output, client *console.Client, device
 	default:
 		written = samples(read, now)
 
-		out.Names.Tell(name, whoIsWhere(read), now.Add(good))
+		announce(out.Names, read, now, interval)
 	}
 
 	if err := out.Metrics.Write(ctx, written); err != nil && ctx.Err() == nil {
@@ -203,6 +209,12 @@ func report(ctx context.Context, client *console.Client, devices console.Kind) (
 	}
 
 	return read, nil
+}
+
+// announce tells names who each address of a reading made at now is, good for
+// stands of the intervals the console is read at.
+func announce(names *plugin.Names, read reading, now time.Time, interval time.Duration) {
+	names.Tell(name, whoIsWhere(read), now.Add(stands*interval))
 }
 
 // whoIsWhere is who each address of the reading is: a device or a client,

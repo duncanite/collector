@@ -104,8 +104,15 @@ the address, `source.name` and `destination.name`, as it is known when the flow 
 Nothing is asked of the network for it, and no reverse lookup is made. A name is told for
 five intervals of the console's reads and no longer, since an address goes to another host
 in time; an address two of the console's clients hold is nobody's; a flow read before the
-first read of the console, or of an address the console does not know, has no name. A name
-is cut and cleaned as any string of the exporter's is: a host chooses its own.
+first read of the console, or of an address the console does not know, has no name.
+
+A name is a host's own choice when its owner gave it none, and it ends up where a browser
+draws it. Both ways a name leaves the collector, as the `client` and `device` labels of
+`unifi`'s series and as a flow's `source.name` and `destination.name`, it is first made one
+line of text with no markup in it: `<`, `>` and `&` are written `(`, `)` and `+`; a control
+character, a line separator, a character that only formats (the right-to-left override, a
+zero-width one) and what is not UTF-8 become U+FFFD; and it is cut after 256 octets. Two
+names that come out the same are told apart by their MAC, like any two.
 
 `otlp` reads nothing of what it passes on, keeps nothing and tries nothing again: a request
 the store refuses is answered with the store's own refusal, and a store that is gone with a

@@ -74,13 +74,17 @@ func samples(read reading, now time.Time) []plugin.Sample {
 // its MAC when it holds none, or when another is called the same. A
 // console keeps no two names apart, and two documents of one name would
 // be one series written twice.
+//
+// A name is its owner's word or the host's own, and is a label a
+// dashboard draws: it is made fit to be shown first, and two that come
+// out the same are told apart by their MAC like any two.
 func names(docs []console.Document, keys ...string) []string {
 	called := make([]string, len(docs))
 	count := make(map[string]int, len(docs))
 
 	for index, doc := range docs {
 		for _, key := range keys {
-			if called[index] = text(doc[key]); called[index] != "" {
+			if called[index] = plugin.Name(text(doc[key])); called[index] != "" {
 				break
 			}
 		}
@@ -90,7 +94,7 @@ func names(docs []console.Document, keys ...string) []string {
 
 	for index, doc := range docs {
 		if called[index] == "" || count[called[index]] > 1 {
-			called[index] = text(doc["mac"])
+			called[index] = plugin.Name(text(doc["mac"]))
 		}
 	}
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/duncanite/go-unifi/console"
 
+	"github.com/duncanite/collector/internal/plugin"
 	"github.com/duncanite/collector/internal/plugins/unifi"
 )
 
@@ -316,5 +317,48 @@ func TestAnAddressIsCalledWhatItsSeriesAre(t *testing.T) {
 		if got[netip.MustParseAddr(address)] != name {
 			t.Errorf("%s is %q, want %q", address, got[netip.MustParseAddr(address)], name)
 		}
+	}
+}
+
+// TestAClientsNameIsALabelFitToBeShown gives the console clients that
+// call themselves by markup: the label of their series has none left, and
+// two that come out the same are told apart by their addresses.
+func TestAClientsNameIsALabelFitToBeShown(t *testing.T) {
+	t.Parallel()
+
+	got := reported(t, "[]", `[
+		{"mac": "a", "hostname": "<img src=x onerror=alert(1)>", "uptime": 1},
+		{"mac": "b", "name": "<b>", "uptime": 2},
+		{"mac": "c", "name": "(b)", "uptime": 3}
+	]`, "[]")
+
+	holds(t, got,
+		"unifi_client_uptime_seconds{client=(img src=x onerror=alert(1))} 1",
+		"unifi_client_uptime_seconds{client=b} 2",
+		"unifi_client_uptime_seconds{client=c} 3",
+	)
+	lacks(t, got, "<", ">")
+}
+
+// TestWhatTheConsoleSaysStandsForFiveOfItsReads tells the names of one
+// reading: they are known to the end of the fifth interval after it, and
+// not a moment longer.
+func TestWhatTheConsoleSaysStandsForFiveOfItsReads(t *testing.T) {
+	t.Parallel()
+
+	var (
+		names = plugin.NewNames()
+		read  = time.Date(2026, time.November, 22, 12, 0, 0, 0, time.UTC)
+		whose = netip.MustParseAddr("192.0.2.7")
+	)
+
+	unifi.Tell(names, nil, documents(t, `[{"mac": "a", "name": "Laptop", "ip": "192.0.2.7"}]`), read, time.Minute)
+
+	if got := names.Of(whose, read.Add(5*time.Minute)); got != "Laptop" {
+		t.Errorf("five intervals after the reading the address is %q, want Laptop", got)
+	}
+
+	if got := names.Of(whose, read.Add(5*time.Minute+time.Nanosecond)); got != "" {
+		t.Errorf("past five intervals the address is still %q", got)
 	}
 }
