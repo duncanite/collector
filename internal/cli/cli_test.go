@@ -810,6 +810,49 @@ func TestAFlowIsNamedByWhatTheConsoleKnows(t *testing.T) {
 	}
 }
 
+// TestAFirewallLineIsNamedByWhatTheConsoleKnows runs the console's plugin
+// beside the syslog one: once the console is read, the gateway's firewall
+// line about the address it gives the laptop is stored with the laptop's
+// name, and the end the console knows nothing of with none.
+func TestAFirewallLineIsNamedByWhatTheConsoleKnows(t *testing.T) {
+	t.Setenv("UNIFI_API_KEY", consoletest.APIKey)
+
+	st := newStore(t, 0)
+	address := listening(t)
+
+	col := start(t, append(unifiConsole(t, st),
+		"--enable", "unifi-syslog", "--logs-url", st.server.URL, "--unifi-syslog.listen", address)...)
+
+	// The console's series are written after its names are told.
+	if got := st.next(t); got.path == "/insert/jsonline" {
+		t.Fatalf("the first write is a line's, before the console was read: %q", got.body)
+	}
+
+	got := send(t, st, address, "<13>"+time.Now().UTC().Format(time.Stamp)+
+		` Gateway Gateway [LAN_LAN-D-10004] DESCR="Block Visitors to Family" IN=br4 OUT=br2 `+
+		"SRC=198.51.100.9 DST=192.0.2.7 LEN=32 PROTO=UDP SPT=3722 DPT=3722 LEN=12 \n")
+
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+
+	var line map[string]string
+
+	first, _, _ := strings.Cut(got.body, "\n")
+	if err := json.Unmarshal([]byte(first), &line); err != nil {
+		t.Fatalf("the logs store was sent %q: %v", got.body, err)
+	}
+
+	if line["destination.address"] != "192.0.2.7" || line["destination.name"] != "Laptop" {
+		t.Errorf("the destination is %q, named %q, want 192.0.2.7, named Laptop, in %q",
+			line["destination.address"], line["destination.name"], first)
+	}
+
+	if name, written := line["source.name"]; written {
+		t.Errorf("the source is named %q, and the console knows nobody there", name)
+	}
+}
+
 // TestAConsoleThatStopsAnsweringLeavesTheNamesItGave reads the console
 // once, then has it refuse: the read that failed is written as down, and
 // a flow that comes after it is still named by what the read before it

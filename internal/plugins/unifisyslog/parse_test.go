@@ -3,6 +3,7 @@ package unifisyslog_test
 import (
 	"flag"
 	"fmt"
+	"net/netip"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -337,6 +338,103 @@ func TestARecordIsGroupedByItsSenderAndNothingOfTheLine(t *testing.T) {
 			field(record, "network.peer.address") != sender {
 			t.Errorf("stream %q, sender %q, for %s", record.Stream, field(record, "network.peer.address"), datagram)
 		}
+	}
+}
+
+// values is the fields of a record by name.
+func values(line plugin.Record) map[string]string {
+	out := make(map[string]string, len(line.Fields))
+	for _, field := range line.Fields {
+		out[field.Name] = field.Value
+	}
+
+	return out
+}
+
+// TestAFirewallLineSaysWhoItsEndsAre names the two ends of the gateway's
+// firewall line by what the collector was told of their addresses: the end
+// that is known gets its name beside its address, the other none, and so
+// does nothing once the word no longer stands.
+func TestAFirewallLineSaysWhoItsEndsAre(t *testing.T) {
+	t.Parallel()
+
+	received, location := when(t)
+
+	const block = `<13>Nov 15 16:08:42 Gateway Gateway [LAN_LAN-D-10004] DESCR="Block Visitors to Family" IN=br4 OUT=br2 ` +
+		`SRC=%s DST=%s LEN=32 PROTO=UDP SPT=3722 DPT=3722 LEN=12 `
+
+	names := plugin.NewNames()
+	names.Tell("console", map[netip.Addr]string{
+		netip.MustParseAddr("192.0.2.16"):     "Visitor's phone",
+		netip.MustParseAddr("198.51.100.170"): "Laptop",
+		netip.MustParseAddr("2001:db8::7"):    "Tablet",
+	}, received.Add(time.Minute))
+
+	for _, test := range []struct {
+		name, source, destination string
+		names                     *plugin.Names
+		at                        time.Time
+		wantSource, wantDest      string
+	}{
+		{"both ends known", "192.0.2.16", "198.51.100.170", names, received, "Visitor's phone", "Laptop"},
+		{"the source alone", "192.0.2.16", "203.0.113.9", names, received, "Visitor's phone", ""},
+		{"the destination alone", "203.0.113.9", "198.51.100.170", names, received, "", "Laptop"},
+		{"over IPv6", "2001:db8::7", "2001:db8::9", names, received, "Tablet", ""},
+		{"what is no address", "192.0.2.16.", "Laptop", names, received, "", ""},
+		{"a word that no longer stands", "192.0.2.16", "198.51.100.170", names, received.Add(time.Hour), "", ""},
+		{"nobody to ask", "192.0.2.16", "198.51.100.170", nil, received, "", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			read := unifisyslog.Parse(
+				[]byte(fmt.Sprintf(block, test.source, test.destination)),
+				sender,
+				received,
+				location,
+			)
+			before := values(read)
+			got := values(unifisyslog.Named(read, test.names, test.at))
+
+			if got["source.name"] != test.wantSource || got["destination.name"] != test.wantDest {
+				t.Errorf("named %q and %q, want %q and %q",
+					got["source.name"], got["destination.name"], test.wantSource, test.wantDest)
+			}
+
+			// A name is added and nothing else of the line moves.
+			delete(got, "source.name")
+			delete(got, "destination.name")
+
+			if fmt.Sprint(got) != fmt.Sprint(before) {
+				t.Errorf("the line's own fields are\n%v, want\n%v", got, before)
+			}
+		})
+	}
+}
+
+// TestALineThatIsNoFirewallLineIsNamedNothing leaves every other line as
+// it was read: a program's text that holds an address the collector knows
+// is not a firewall line's end.
+func TestALineThatIsNoFirewallLineIsNamedNothing(t *testing.T) {
+	t.Parallel()
+
+	received, location := when(t)
+
+	names := plugin.NewNames()
+	names.Tell(
+		"console",
+		map[netip.Addr]string{netip.MustParseAddr("192.0.2.16"): "Visitor's phone"},
+		received.Add(time.Minute),
+	)
+
+	read := unifisyslog.Parse(
+		[]byte("<14>Nov 15 16:08:42 Gateway Gateway dnsmasq[77]: query from SRC=192.0.2.16 DST=192.0.2.1 \n"),
+		sender, received, location,
+	)
+
+	got := unifisyslog.Named(read, names, received)
+	if len(got.Fields) != len(read.Fields) {
+		t.Errorf("the line gained fields: %v, from %v", got.Fields, read.Fields)
 	}
 }
 

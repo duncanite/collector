@@ -4,7 +4,8 @@
 //
 // The lines come over plain UDP with nothing to say who sent them: the
 // sender's address is kept on every record, and nothing in a line is
-// trusted.
+// trusted. Who the two ends of a firewall line are is asked of the
+// collector's own names, by the addresses the line gives.
 package unifisyslog
 
 import (
@@ -90,7 +91,8 @@ func (p *Plugin) Run(ctx context.Context, out plugin.Output) error {
 			return fmt.Errorf("reading from %s: %w", p.listen, err)
 		}
 
-		record := Parse(buffer[:size], address(sender), time.Now(), location)
+		now := time.Now()
+		record := Named(Parse(buffer[:size], address(sender), now, location), out.Names, now)
 
 		if err := out.Logs.Write(ctx, []plugin.Record{record}); err != nil && ctx.Err() == nil {
 			slog.WarnContext(ctx, "a line was not stored and is lost", "plugin", name, "error", err)

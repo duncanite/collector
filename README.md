@@ -23,7 +23,7 @@ each its settings through that plugin's flags. Nothing here names a host or an a
 | `ipfix` | IPFIX, the flow export a gateway calls NetFlow version 10, received on UDP at `--ipfix.listen` | Logs: one record a flow, its text the flow in a line (`tcp 192.0.2.7:51000 > 198.51.100.9:443 5344385 bytes 5009 packets`), with its addresses, ports and protocol under the names a firewall line has them, every other element under IANA's name as `ipfix.<name>`, the exporter's address, and who either end is, `source.name` and `destination.name`, when another plugin of the same collector has said |
 | `otlp` | The house's own programs that speak OpenTelemetry, sending OTLP over HTTP to `--otlp.listen` | Whatever they send, unread: `/v1/metrics` to the metrics store and `/v1/logs` to the logs store, and the store's answer back to the sender |
 | `unifi` | A UniFi Network console, asked every `--unifi.interval` over [go-unifi](https://github.com/duncanite/go-unifi) for its devices, its clients and its health | Metrics: `unifi_up`; per device whether the console is in touch with it, its uptime, processor, memory, temperature and clients; per radio of an access point its channel, clients, utilization and retries; per port its link, speed, traffic, errors and power; per uplink to the internet its latency and availability; per client where it is attached, its signal, rate, retries and traffic, or its link's speed when wired (a client that moves to another access point or band is a new `unifi_client_info` series, its measures the same ones); per subsystem of the console its verdict and its counts. It also tells the collector's other plugins who each address the console knows is |
-| `unifi-syslog` | UniFi's remote syslog, received on UDP at `--unifi-syslog.listen`: the gateway, the access points, the switch, and the console's CEF events | Logs: one record a line, with the host, the program and its pid, an access point's model and firmware, a firewall line's rule, policy, addresses and ports, a console event's fields under `cef.*`, and the sender's address |
+| `unifi-syslog` | UniFi's remote syslog, received on UDP at `--unifi-syslog.listen`: the gateway, the access points, the switch, and the console's CEF events | Logs: one record a line, with the host, the program and its pid, an access point's model and firmware, a firewall line's rule, policy, addresses and ports, and who its two ends are, `source.name` and `destination.name`, when another plugin of the same collector has said, a console event's fields under `cef.*`, and the sender's address |
 
 ```bash
 ARRIS_PASSWORD=… collector \
@@ -59,6 +59,9 @@ bounded, and what is not is said here:
 - What is not UTF-8, and every control character but the tab and the line feed, is
   replaced.
 - A line of a shape nobody mapped is stored with its text whole.
+- Who the two ends of a firewall line are is the collector's own word, never the line's:
+  the line gives an address, and the name is what `unifi` told of that address, as for a
+  flow (below). What a line gives that is not an address is asked of nobody.
 
 Not bounded: who sends (https://github.com/duncanite/collector/issues/13), how many lines,
 and what they say. A host name, a program, a firewall policy and every value are the
@@ -101,14 +104,17 @@ A flow carries addresses and no name. Who an address is comes from another plugi
 same collector, when one knows: `unifi` tells, at every read of the console, the address of
 each device and client under the name its series carry, and `ipfix` writes the name beside
 the address, `source.name` and `destination.name`, as it is known when the flow is read.
+`unifi-syslog` does the same for the two ends of the gateway's firewall line, under the same
+two fields, as known when the line is read.
 Nothing is asked of the network for it, and no reverse lookup is made. A name is told for
 five intervals of the console's reads and no longer, since an address goes to another host
 in time; an address two of the console's clients hold is nobody's; a flow read before the
 first read of the console, or of an address the console does not know, has no name.
 
 A name is a host's own choice when its owner gave it none, and it ends up where a browser
-draws it. Both ways a name leaves the collector, as the `client` and `device` labels of
-`unifi`'s series and as a flow's `source.name` and `destination.name`, it is first made one
+draws it. Every way a name leaves the collector, as the `client` and `device` labels of
+`unifi`'s series and as the `source.name` and `destination.name` of a flow or of a firewall
+line, it is first made one
 line of text with no markup in it: `<`, `>` and `&` are written `(`, `)` and `+`; a control
 character, a line separator, a character that only formats (the right-to-left override, a
 zero-width one) and what is not UTF-8 become U+FFFD; and it is cut after 256 octets. Two

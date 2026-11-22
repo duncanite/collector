@@ -1,6 +1,7 @@
 package unifisyslog
 
 import (
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,6 +25,15 @@ const day = 24 * time.Hour
 // store groups a deployment's lines by: the one thing of a datagram its
 // sender does not write.
 const peer = "network.peer.address"
+
+// The fields the two ends of a firewall line are written under, the names
+// a flow's ends have: one query finds an address, or a host, in both.
+const (
+	sourceAddress      = "source.address"
+	destinationAddress = "destination.address"
+	sourceName         = "source.name"
+	destinationName    = "destination.name"
+)
 
 // The syslog priority: a facility times eight, plus a severity.
 const (
@@ -107,6 +117,35 @@ func Parse(datagram []byte, sender string, received time.Time, location *time.Lo
 	line.device(host, rest)
 
 	return line.Record
+}
+
+// Named is line with who its two ends are: for a firewall line whose
+// addresses names knows at the time given, source.name and
+// destination.name beside the addresses, as a flow has them. What a line
+// gives for an address is its sender's to write; what is not an address is
+// asked of nobody, and a name is the collector's own word, never the
+// line's.
+func Named(line plugin.Record, names *plugin.Names, when time.Time) plugin.Record {
+	for _, end := range [...]struct{ address, name string }{
+		{sourceAddress, sourceName},
+		{destinationAddress, destinationName},
+	} {
+		for _, field := range line.Fields {
+			if field.Name != end.address {
+				continue
+			}
+
+			if where, err := netip.ParseAddr(field.Value); err == nil {
+				if called := names.Of(where, when); called != "" {
+					line.Fields = append(line.Fields, plugin.Field{Name: end.name, Value: called})
+				}
+			}
+
+			break
+		}
+	}
+
+	return line
 }
 
 // record is a plugin.Record being filled, and when its line was read.
@@ -231,8 +270,8 @@ func (r *record) firewall(text string, match []string) {
 	r.add("network.interface.out", match[4])
 
 	if found := addresses.FindStringSubmatch(text); found != nil {
-		r.add("source.address", found[1])
-		r.add("destination.address", found[2])
+		r.add(sourceAddress, found[1])
+		r.add(destinationAddress, found[2])
 	}
 
 	if found := transport.FindStringSubmatch(text); found != nil {
