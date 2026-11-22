@@ -84,7 +84,8 @@ the store is bounded:
   the exporter saw it or sent it, under the same condition, else by its reading.
 - An element of IANA's this build has no name for, and an enterprise's own, is written in
   hex under its number, `ipfix.<element>` or `ipfix.<enterprise>.<element>`, sixty-four
-  octets of it at most; a string is cut at 256 octets and cleaned as a syslog line is.
+  octets of it at most; a string is read to its 256th octet and cleaned as a syslog line
+  is, where a control character becomes a mark of three octets: 768 stored at most.
   The records of an options template, what the exporter says of itself, are skipped.
 - A datagram that is not read whole is counted, and said in the collector's own log at
   most once a minute.
