@@ -3,6 +3,7 @@
     "mac": "00:00:5e:00:53:10",
     "name": "Laptop",
     "hostname": "laptop-host",
+    "ip": "192.0.2.7",
     "is_wired": false,
     "network": "Family",
     "last_uplink_name": "Attic",

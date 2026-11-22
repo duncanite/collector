@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"time"
 
@@ -31,6 +32,12 @@ const keyVar = "UNIFI_API_KEY" // #nosec G101 -- the variable's name, not a cred
 // timeout bounds one read of the console; it answers the device list in
 // well under a second.
 const timeout = 30 * time.Second
+
+// stands is how many intervals the plugin stands by the names it told: a
+// console that misses a read or two does not unname the house, and one
+// that is gone does not name it for long, since an address is leased and
+// goes to another host in time.
+const stands = 5
 
 var (
 	errNoHost        = errors.New("--unifi.host is empty")
@@ -116,7 +123,7 @@ func (p *Plugin) Run(ctx context.Context, out plugin.Output) error {
 	defer ticker.Stop()
 
 	for {
-		poll(ctx, out, client, devices)
+		poll(ctx, out, client, devices, p.interval)
 
 		select {
 		case <-ctx.Done():
@@ -140,7 +147,16 @@ func deviceList() (console.Kind, error) {
 // poll reads the console once and writes what it read, or that it could
 // not. The three reads are one: a console that gives its devices and not
 // its clients is written as not read, rather than as a house with none.
-func poll(ctx context.Context, out plugin.Output, client *console.Client, devices console.Kind) {
+// What it read also tells the other plugins who each address is; a read
+// that failed tells nothing, and the names of the last one stand until
+// their time.
+func poll(
+	ctx context.Context,
+	out plugin.Output,
+	client *console.Client,
+	devices console.Kind,
+	interval time.Duration,
+) {
 	now := time.Now()
 
 	var written []plugin.Sample
@@ -156,6 +172,8 @@ func poll(ctx context.Context, out plugin.Output, client *console.Client, device
 		written = []plugin.Sample{{Name: "unifi_up", Value: 0, Time: now}}
 	default:
 		written = samples(read, now)
+
+		announce(out.Names, read, now, interval)
 	}
 
 	if err := out.Metrics.Write(ctx, written); err != nil && ctx.Err() == nil {
@@ -191,4 +209,47 @@ func report(ctx context.Context, client *console.Client, devices console.Kind) (
 	}
 
 	return read, nil
+}
+
+// announce tells names who each address of a reading made at now is, good for
+// stands of the intervals the console is read at.
+func announce(names *plugin.Names, read reading, now time.Time, interval time.Duration) {
+	names.Tell(name, whoIsWhere(read), now.Add(stands*interval))
+}
+
+// whoIsWhere is who each address of the reading is: a device or a client,
+// under the name its series carry. An address two of them hold is nobody's:
+// the console keeps a client it saw last on an address another has since
+// been given, and naming the wrong one is worse than naming none.
+func whoIsWhere(read reading) map[netip.Addr]string {
+	var (
+		called = make(map[netip.Addr]string, len(read.devices)+len(read.clients))
+		shared = make(map[netip.Addr]bool)
+	)
+
+	hold := func(docs []console.Document, names []string) {
+		for index, doc := range docs {
+			address, err := netip.ParseAddr(text(doc["ip"]))
+			if err != nil || address.IsUnspecified() {
+				continue
+			}
+
+			address = address.Unmap()
+
+			if _, held := called[address]; held {
+				shared[address] = true
+			}
+
+			called[address] = names[index]
+		}
+	}
+
+	hold(read.devices, names(read.devices, "name"))
+	hold(read.clients, names(read.clients, "name", "hostname"))
+
+	for address := range shared {
+		delete(called, address)
+	}
+
+	return called
 }

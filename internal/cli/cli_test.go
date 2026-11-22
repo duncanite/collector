@@ -769,6 +769,106 @@ func TestTheConsolesDevicesReachTheMetricsStore(t *testing.T) {
 	}
 }
 
+// TestAFlowIsNamedByWhatTheConsoleKnows runs the console's plugin beside
+// the flows': once the console is read, a flow from the address it gives
+// the laptop is stored with the laptop's name, and the end the console
+// knows nothing of with none.
+func TestAFlowIsNamedByWhatTheConsoleKnows(t *testing.T) {
+	t.Setenv("UNIFI_API_KEY", consoletest.APIKey)
+
+	st := newStore(t, 0)
+	address := listening(t)
+
+	col := start(t, append(unifiConsole(t, st),
+		"--enable", "ipfix", "--logs-url", st.server.URL, "--ipfix.listen", address)...)
+
+	// The console's series are written after its names are told.
+	if got := st.next(t); got.path == "/insert/jsonline" {
+		t.Fatalf("the first write is a flow's, before the console was read: %q", got.body)
+	}
+
+	got := send(t, st, address, flows())
+
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+
+	var line map[string]string
+
+	first, _, _ := strings.Cut(got.body, "\n")
+	if err := json.Unmarshal([]byte(first), &line); err != nil {
+		t.Fatalf("the logs store was sent %q: %v", got.body, err)
+	}
+
+	if line["source.address"] != "192.0.2.7" || line["source.name"] != "Laptop" {
+		t.Errorf("the source is %q, named %q, want 192.0.2.7, named Laptop, in %q",
+			line["source.address"], line["source.name"], first)
+	}
+
+	if name, written := line["destination.name"]; written {
+		t.Errorf("the destination is named %q, and the console knows nobody there", name)
+	}
+}
+
+// TestAConsoleThatStopsAnsweringLeavesTheNamesItGave reads the console
+// once, then has it refuse: the read that failed is written as down, and
+// a flow that comes after it is still named by what the read before it
+// said, whose word stands for five intervals.
+func TestAConsoleThatStopsAnsweringLeavesTheNamesItGave(t *testing.T) {
+	t.Setenv("UNIFI_API_KEY", consoletest.APIKey)
+
+	var (
+		metrics = newStore(t, 0)
+		logs    = newStore(t, 0)
+		address = listening(t)
+		// The first read is three requests: the devices, the clients, the health.
+		asked atomic.Int64
+	)
+
+	const first = 3
+
+	console := unifiConsoleBehind(t, metrics, func(console http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, req *http.Request) {
+			if asked.Add(1) > first {
+				http.Error(writer, "not now", http.StatusServiceUnavailable)
+
+				return
+			}
+
+			console.ServeHTTP(writer, req)
+		})
+	})
+
+	col := start(t, append(console,
+		"--unifi.interval", "1s",
+		"--enable", "ipfix", "--logs-url", logs.server.URL, "--ipfix.listen", address)...)
+
+	if got := untimed(t, metrics.next(t).body); !strings.Contains(got, "unifi_up{job=\"unifi\"} 1\n") {
+		t.Fatalf("the first read was written:\n%s", got)
+	}
+
+	if got := untimed(t, metrics.next(t).body); got != "unifi_up{job=\"unifi\"} 0\n" {
+		t.Fatalf("the read the console refused was written:\n%s", got)
+	}
+
+	got := send(t, logs, address, flows())
+
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+
+	var line map[string]string
+
+	head, _, _ := strings.Cut(got.body, "\n")
+	if err := json.Unmarshal([]byte(head), &line); err != nil {
+		t.Fatalf("the logs store was sent %q: %v", got.body, err)
+	}
+
+	if line["source.name"] != "Laptop" {
+		t.Errorf("after a read that failed the source is named %q, want Laptop, in %q", line["source.name"], head)
+	}
+}
+
 func TestAConsoleThatRefusesIsWrittenAsDown(t *testing.T) {
 	t.Setenv("UNIFI_API_KEY", "not the key")
 

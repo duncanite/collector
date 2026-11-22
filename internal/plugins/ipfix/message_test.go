@@ -277,6 +277,107 @@ func TestTheOptionsAndTheFrameTypeHaveTheirNames(t *testing.T) {
 	}
 }
 
+// TestAFlowsEndsAreNamedWhenSomeoneSaidWhoTheyAre reads a flow each way
+// between a host the collector was told the name of and one it was not:
+// the name is beside the address of the end it is the name of, and the
+// other end has none.
+func TestAFlowsEndsAreNamedWhenSomeoneSaidWhoTheyAre(t *testing.T) {
+	t.Parallel()
+
+	names := plugin.NewNames()
+	names.Tell("console", map[netip.Addr]string{addr("192.0.2.7"): "Laptop"}, received())
+
+	reader := ipfix.NewReader()
+	reader.Name(names)
+
+	records := read(t, reader, message(t, received(), 0,
+		template(t, 256, 8, 4, 12, 4),
+		set(t, 256,
+			addr("192.0.2.7"), addr("198.51.100.9"),
+			addr("198.51.100.9"), addr("192.0.2.7"),
+		),
+	))
+	if len(records) != 2 {
+		t.Fatalf("%d records, want the two", len(records))
+	}
+
+	for index, want := range []map[string]string{
+		{"source.name": "Laptop", "destination.name": ""},
+		{"source.name": "", "destination.name": "Laptop"},
+	} {
+		got := fields(records[index])
+
+		for name, value := range want {
+			if got[name] != value {
+				t.Errorf("flow %d: %s is %q, want %q", index, name, got[name], value)
+			}
+		}
+	}
+
+	// The name is no part of the flow's line: the line is what the
+	// exporter said.
+	if want := "192.0.2.7 > 198.51.100.9"; records[0].Body != want {
+		t.Errorf("the flow reads %q, want %q", records[0].Body, want)
+	}
+}
+
+// TestANameItsTellerNoLongerStandsByIsNotWritten reads the same flow a
+// moment after the names' time: an address may be another host's by then.
+func TestANameItsTellerNoLongerStandsByIsNotWritten(t *testing.T) {
+	t.Parallel()
+
+	names := plugin.NewNames()
+	names.Tell("console", map[netip.Addr]string{addr("192.0.2.7"): "Laptop"}, received().Add(-time.Second))
+
+	reader := ipfix.NewReader()
+	reader.Name(names)
+
+	// The flow says it ended a minute before, when the word still stood:
+	// its date is the exporter's to say, and a name is asked at the reading.
+	ended := received().Add(-time.Minute)
+
+	records := read(t, reader, message(t, received(), 0,
+		template(t, 256, 8, 4, 12, 4, 153, 8),
+		set(t, 256, addr("192.0.2.7"), addr("198.51.100.9"), uint64(ended.UnixMilli())),
+	))
+	if len(records) != 1 {
+		t.Fatalf("%d records, want the one", len(records))
+	}
+
+	if !records[0].Time.Equal(ended) {
+		t.Fatalf("the flow is dated %s, want its own end, %s", records[0].Time, ended)
+	}
+
+	if got, written := fields(records[0])["source.name"]; written {
+		t.Errorf("the source is named %q by a word that no longer stands", got)
+	}
+}
+
+// TestANameIsWrittenFitToBeShown reads a flow of a host that calls itself
+// by a tag: a host chooses its own name, and the flow carries it as the
+// names hold it, with no markup left.
+func TestANameIsWrittenFitToBeShown(t *testing.T) {
+	t.Parallel()
+
+	names := plugin.NewNames()
+	names.Tell("console", map[netip.Addr]string{addr("192.0.2.7"): "<img src=x onerror=alert(1)>"}, received())
+
+	reader := ipfix.NewReader()
+	reader.Name(names)
+
+	records := read(t, reader, message(t, received(), 0,
+		template(t, 256, 8, 4, 12, 4),
+		set(t, 256, addr("192.0.2.7"), addr("198.51.100.9")),
+	))
+	if len(records) != 1 {
+		t.Fatalf("%d records, want the one", len(records))
+	}
+
+	if want := "(img src=x onerror=alert(1))"; fields(records[0])["source.name"] != want {
+		t.Errorf("the source is named %q, want %q", fields(records[0])["source.name"], want)
+	}
+}
+
 func TestAFlowOverIPv6(t *testing.T) {
 	t.Parallel()
 

@@ -82,6 +82,8 @@ func (p *Plugin) Run(ctx context.Context, out plugin.Output) error {
 		missed unread
 	)
 
+	reader.Name(out.Names)
+
 	for {
 		size, sender, err := conn.ReadFrom(buffer)
 		if err != nil {
