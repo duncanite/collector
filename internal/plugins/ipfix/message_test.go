@@ -394,6 +394,70 @@ func TestATemplateIsItsExportersOwn(t *testing.T) {
 	}
 }
 
+// TestAllOfAKindAreWithdrawnAndTheOtherKindKept: the template set's own
+// number withdraws a domain's templates and leaves its options templates,
+// and the options set's own number the other way around.
+func TestAllOfAKindAreWithdrawnAndTheOtherKindKept(t *testing.T) {
+	t.Parallel()
+
+	reader := ipfix.NewReader()
+	flows := message(t, received(), 1, set(t, 256, addr("192.0.2.7")))
+
+	define := func() {
+		read(t, reader, message(t, received(), 1,
+			template(t, 256, 8, 4),
+			// An options template: a scope of one field, and one more.
+			set(t, 3, 258, 2, 1, 141, 4, 41, 2),
+		))
+	}
+
+	define()
+
+	if reader.Templates() != 2 {
+		t.Fatalf("%d templates held, want the two", reader.Templates())
+	}
+
+	// All templates: the flows are not read any more, the options
+	// template is still held.
+	read(t, reader, message(t, received(), 1, set(t, 2, 2, 0)))
+
+	if _, err := reader.Read(flows, gateway(), received()); !errors.Is(err, ipfix.ErrNoTemplate) ||
+		reader.Templates() != 1 {
+		t.Errorf("after all templates were withdrawn: %v, %d held, want the options template", err, reader.Templates())
+	}
+
+	// All options templates: the flows' template is the one kept.
+	define()
+	read(t, reader, message(t, received(), 1, set(t, 3, 3, 0)))
+
+	if records := read(t, reader, flows); len(records) != 1 || reader.Templates() != 1 {
+		t.Errorf("after all options templates were withdrawn: %d records, %d held", len(records), reader.Templates())
+	}
+}
+
+// TestATimeTooFarToHoldIsWrittenAsItCame: milliseconds past what a time
+// here can count are no time: the field is written in hex, and the record
+// is dated by something else.
+func TestATimeTooFarToHoldIsWrittenAsItCame(t *testing.T) {
+	t.Parallel()
+
+	records := read(t, ipfix.NewReader(), message(t, received(), 1,
+		template(t, 256, 8, 4, 153, 8),
+		set(t, 256, addr("192.0.2.7"), uint64(1<<63)),
+	))
+	if len(records) != 1 {
+		t.Fatalf("%d records, want the one", len(records))
+	}
+
+	if got := fields(records[0])["ipfix.flowEndMilliseconds"]; got != "8000000000000000" {
+		t.Errorf("the end is written %q, want its octets in hex", got)
+	}
+
+	if !records[0].Time.Equal(received()) {
+		t.Errorf("dated %s, want its export, %s", records[0].Time, received())
+	}
+}
+
 // TestTheTemplatesHeldAreBounded: one more than there is room for puts
 // out the one defined longest ago, and a template defined again is as new.
 func TestTheTemplatesHeldAreBounded(t *testing.T) {
@@ -532,6 +596,28 @@ func TestAValueIsBoundedAndPrintable(t *testing.T) {
 	// and a time that is none dates nothing.
 	if records[0].Body != "c000020709 > ?" || !records[0].Time.Equal(received()) {
 		t.Errorf("the flow reads %q, dated %s", records[0].Body, records[0].Time)
+	}
+}
+
+// TestAStringOfNothingPrintableIsThreeTimesWhatWasRead: the 256 octets
+// read of a string are each a mark of three when none is text, which is
+// the most a string stores.
+func TestAStringOfNothingPrintableIsThreeTimesWhatWasRead(t *testing.T) {
+	t.Parallel()
+
+	records := read(t, ipfix.NewReader(), message(t, received(), 1,
+		template(t, 256, 82, 65535),
+		set(t, 256, uint8(255), 300, strings.Repeat("\x00", 300)),
+	))
+	if len(records) != 1 {
+		t.Fatalf("%d records, want the one", len(records))
+	}
+
+	const read, mark = 256, 3
+
+	if got := fields(records[0])["ipfix.interfaceName"]; got != strings.Repeat("\ufffd", read) ||
+		len(got) != read*mark {
+		t.Errorf("the name is %d octets, want %d: %q", len(got), read*mark, got)
 	}
 }
 

@@ -22,7 +22,7 @@ each its settings through that plugin's flags. Nothing here names a host or an a
 | `arris` | An Arris SURFboard cable modem, read every `--arris.interval` over [go-arris](https://github.com/duncanite/go-arris) | Metrics: `arris_up`, the uptime, and per bonded channel its lock, frequency, power, signal-to-noise ratio and codeword error counts |
 | `ipfix` | IPFIX, the flow export a gateway calls NetFlow version 10, received on UDP at `--ipfix.listen` | Logs: one record a flow, its text the flow in a line (`tcp 192.0.2.7:51000 > 198.51.100.9:443 5344385 bytes 5009 packets`), with its addresses, ports and protocol under the names a firewall line has them, every other element under IANA's name as `ipfix.<name>`, and the exporter's address |
 | `otlp` | The house's own programs that speak OpenTelemetry, sending OTLP over HTTP to `--otlp.listen` | Whatever they send, unread: `/v1/metrics` to the metrics store and `/v1/logs` to the logs store, and the store's answer back to the sender |
-| `unifi` | A UniFi Network console, asked every `--unifi.interval` over [go-unifi](https://github.com/duncanite/go-unifi) for its devices, its clients and its health | Metrics: `unifi_up`; per device whether the console is in touch with it, its uptime, processor, memory, temperature and clients; per radio of an access point its channel, clients, utilization and retries; per port its link, speed, traffic, errors and power; per uplink to the internet its latency and availability; per client where it is attached, its signal, rate, retries and traffic, or its link's speed when wired; per subsystem of the console its verdict and its counts |
+| `unifi` | A UniFi Network console, asked every `--unifi.interval` over [go-unifi](https://github.com/duncanite/go-unifi) for its devices, its clients and its health | Metrics: `unifi_up`; per device whether the console is in touch with it, its uptime, processor, memory, temperature and clients; per radio of an access point its channel, clients, utilization and retries; per port its link, speed, traffic, errors and power; per uplink to the internet its latency and availability; per client where it is attached, its signal, rate, retries and traffic, or its link's speed when wired (a client that moves to another access point or band is a new `unifi_client_info` series, its measures the same ones); per subsystem of the console its verdict and its counts |
 | `unifi-syslog` | UniFi's remote syslog, received on UDP at `--unifi-syslog.listen`: the gateway, the access points, the switch, and the console's CEF events | Logs: one record a line, with the host, the program and its pid, an access point's model and firmware, a firewall line's rule, policy, addresses and ports, a console event's fields under `cef.*`, and the sender's address |
 
 ```bash
@@ -84,7 +84,8 @@ the store is bounded:
   the exporter saw it or sent it, under the same condition, else by its reading.
 - An element of IANA's this build has no name for, and an enterprise's own, is written in
   hex under its number, `ipfix.<element>` or `ipfix.<enterprise>.<element>`, sixty-four
-  octets of it at most; a string is cut at 256 octets and cleaned as a syslog line is.
+  octets of it at most; a string is read to its 256th octet and cleaned as a syslog line
+  is, where a control character becomes a mark of three octets: 768 stored at most.
   The records of an options template, what the exporter says of itself, are skipped.
 - A datagram that is not read whole is counted, and said in the collector's own log at
   most once a minute.

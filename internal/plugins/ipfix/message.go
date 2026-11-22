@@ -197,8 +197,12 @@ func (r *Reader) withdraw(named scope) {
 	case named.id >= firstData:
 		delete(r.templates, named)
 	case named.id == templateSet || named.id == optionsSet:
-		maps.DeleteFunc(r.templates, func(one scope, _ *template) bool {
-			return one.exporter == named.exporter && one.domain == named.domain
+		// The set's own number withdraws all of its kind, and leaves the
+		// other kind: RFC 7011, 8.1.
+		options := named.id == optionsSet
+
+		maps.DeleteFunc(r.templates, func(one scope, held *template) bool {
+			return one.exporter == named.exporter && one.domain == named.domain && held.options == options
 		})
 	}
 }
