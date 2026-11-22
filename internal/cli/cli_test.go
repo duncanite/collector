@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1002,6 +1003,30 @@ func post(t *testing.T, method, address, path, kind, encoding string, body func(
 	return answer{}
 }
 
+// once sends one POST to the collector's OTLP port, which is open, and
+// returns what it was answered. Unlike post it fails no test itself, so it
+// may be called from a goroutine that is not the test's.
+func once(ctx context.Context, address, path, body string) (answer, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+address+path, strings.NewReader(body))
+	if err != nil {
+		return answer{}, err
+	}
+
+	response, err := (&http.Client{Timeout: patience}).Do(request)
+	if err != nil {
+		return answer{}, err
+	}
+
+	defer func() { _ = response.Body.Close() }()
+
+	said, err := io.ReadAll(response.Body)
+	if err != nil {
+		return answer{}, err
+	}
+
+	return answer{status: response.StatusCode, body: string(said)}, nil
+}
+
 // text is a body of that text, made anew each time it is asked for.
 func text(body string) func() io.Reader {
 	return func() io.Reader { return strings.NewReader(body) }
@@ -1161,6 +1186,181 @@ func TestAStoreThatIsGoneIsABadGateway(t *testing.T) {
 
 	// The collector goes on.
 	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+}
+
+// answering is a store that answers every request as answer does, and
+// counts the requests that reach it.
+func answering(t *testing.T, answer http.HandlerFunc) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+
+	var reached atomic.Int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached.Add(1)
+		answer(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	return server, &reached
+}
+
+func TestABodyThatSaysItIsTooLargeNeverReachesTheStore(t *testing.T) {
+	t.Parallel()
+
+	st, reached := answering(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	address := listeningTCP(t)
+	col := start(t, "--enable", "otlp", "--metrics-url", st.URL, "--otlp.listen", address)
+
+	const large = 17 << 20
+
+	said := post(t, http.MethodPost, address, "/v1/metrics", "", "", text(strings.Repeat("x", large)))
+	if said.status != http.StatusRequestEntityTooLarge {
+		t.Errorf("answered %d %q", said.status, said.body)
+	}
+
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+
+	// Refused by the length it said, before any of it was passed on.
+	if got := reached.Load(); got != 0 {
+		t.Errorf("the store was reached %d times", got)
+	}
+}
+
+func TestAStoresAnswerIsPassedBackCutShort(t *testing.T) {
+	t.Parallel()
+
+	const (
+		long  = 100 << 10
+		bound = 64 << 10
+	)
+
+	st, _ := answering(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write(bytes.Repeat([]byte("no"), long/2))
+	})
+	address := listeningTCP(t)
+	col := start(t, "--enable", "otlp", "--logs-url", st.URL, "--otlp.listen", address)
+
+	said := post(t, http.MethodPost, address, "/v1/logs", "", "", text("x"))
+	if said.status != http.StatusBadRequest || len(said.body) != bound {
+		t.Errorf("answered %d with %d bytes of the store's %d, want %d", said.status, len(said.body), long, bound)
+	}
+
+	if code, stderr := col.stop(t); code != cli.ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, stderr)
+	}
+}
+
+func TestARedirectOfTheStoresIsNotFollowed(t *testing.T) {
+	t.Parallel()
+
+	elsewhere, asked := answering(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("what is elsewhere"))
+	})
+
+	for _, status := range []int{
+		http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect,
+	} {
+		st, _ := answering(t, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, elsewhere.URL+"/secret", status)
+		})
+		address := listeningTCP(t)
+		col := start(t, "--enable", "otlp", "--metrics-url", st.URL, "--otlp.listen", address)
+
+		// The redirect is the store's answer, and the sender hears it as
+		// it hears any other.
+		said := post(t, http.MethodPost, address, "/v1/metrics", "", "", text("x"))
+		if said.status != status || strings.Contains(said.body, "what is elsewhere") {
+			t.Errorf("%d: answered %d %q", status, said.status, said.body)
+		}
+
+		if code, stderr := col.stop(t); code != cli.ExitOK {
+			t.Fatalf("exit = %d:\n%s", code, stderr)
+		}
+	}
+
+	if got := asked.Load(); got != 0 {
+		t.Errorf("the place a redirect named was asked %d times", got)
+	}
+}
+
+// TestARequestInFlightOutlivesTheStop: the collector's stop does not cut
+// a request the store has not answered yet; it waits for it.
+func TestARequestInFlightOutlivesTheStop(t *testing.T) {
+	t.Parallel()
+
+	var hold atomic.Bool
+
+	arrived, release := make(chan struct{}, 1), make(chan struct{})
+
+	st, _ := answering(t, func(w http.ResponseWriter, _ *http.Request) {
+		if hold.Load() {
+			arrived <- struct{}{}
+
+			<-release
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	})
+	address := listeningTCP(t)
+	col := start(t, "--enable", "otlp", "--metrics-url", st.URL, "--otlp.listen", address)
+
+	// The port is open.
+	if said := post(
+		t,
+		http.MethodPost,
+		address,
+		"/v1/metrics",
+		"",
+		"",
+		text("x"),
+	); said.status != http.StatusNoContent {
+		t.Fatalf("answered %d %q", said.status, said.body)
+	}
+
+	hold.Store(true)
+
+	// Sent off the test's own goroutine, so by what fails no test.
+	type outcome struct {
+		said answer
+		err  error
+	}
+
+	heard := make(chan outcome, 1)
+	ctx := t.Context()
+
+	go func() {
+		said, err := once(ctx, address, "/v1/metrics", "x")
+		heard <- outcome{said: said, err: err}
+	}()
+
+	select {
+	case <-arrived:
+	case <-time.After(patience):
+		t.Fatal("the request never reached the store")
+	}
+
+	// The stop, while the store holds the request; then the store's
+	// answer, late.
+	col.cancel()
+	time.Sleep(200 * time.Millisecond)
+	close(release)
+
+	select {
+	case got := <-heard:
+		if got.err != nil || got.said.status != http.StatusNoContent {
+			t.Errorf("the request in flight was answered %d %q: %v", got.said.status, got.said.body, got.err)
+		}
+	case <-time.After(patience):
+		t.Fatal("the request in flight was never answered")
+	}
+
+	if code, stderr := col.wait(t); code != cli.ExitOK {
 		t.Fatalf("exit = %d:\n%s", code, stderr)
 	}
 }

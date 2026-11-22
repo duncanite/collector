@@ -99,8 +99,8 @@ RFC.
 `otlp` reads nothing of what it passes on, keeps nothing and tries nothing again: a request
 the store refuses is answered with the store's own refusal, and a store that is gone with a
 502, for the sender's exporter to do what it does. A request is streamed and never held; one
-larger than 16 MiB is refused. It asks no credential: whoever reaches its port writes into
-the stores.
+larger than 16 MiB is refused. A store's redirect is handed back as the answer it is and
+never followed. It asks no credential: whoever reaches its port writes into the stores.
 
 ## Working on it
 
