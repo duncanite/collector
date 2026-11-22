@@ -242,6 +242,41 @@ func TestAGatewaysFlowIsReadFieldByField(t *testing.T) {
 	}
 }
 
+// TestTheOptionsAndTheFrameTypeHaveTheirNames reads the two elements a
+// UniFi gateway sends beside the usual ones: the TCP options seen, in four
+// octets of the element's eight, and the type of the Ethernet frame. Both
+// are numbers under IANA's names, and not hex under 209 and 256.
+func TestTheOptionsAndTheFrameTypeHaveTheirNames(t *testing.T) {
+	t.Parallel()
+
+	datagram := message(t, received(), 0,
+		template(t, 258, 8, 4, 12, 4, 209, 4, 256, 2),
+		set(t, 258, addr("192.0.2.7"), addr("198.51.100.9"), uint32(0x0d000000), 0x86dd),
+	)
+
+	records := read(t, ipfix.NewReader(), datagram)
+	if len(records) != 1 {
+		t.Fatalf("%d records, want the one", len(records))
+	}
+
+	got := fields(records[0])
+
+	for name, want := range map[string]string{
+		"ipfix.tcpOptions":   "218103808",
+		"ipfix.ethernetType": "34525",
+	} {
+		if got[name] != want {
+			t.Errorf("%s is %q, want %q", name, got[name], want)
+		}
+	}
+
+	for _, number := range []string{"ipfix.209", "ipfix.256"} {
+		if value, written := got[number]; written {
+			t.Errorf("%s is written, %q: the element has a name", number, value)
+		}
+	}
+}
+
 func TestAFlowOverIPv6(t *testing.T) {
 	t.Parallel()
 
