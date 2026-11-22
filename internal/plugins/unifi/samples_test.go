@@ -19,6 +19,13 @@ import (
 func written(t *testing.T, list string) string {
 	t.Helper()
 
+	return reported(t, list, "[]", "[]")
+}
+
+// documents is a JSON list as the console's library hands one over.
+func documents(t *testing.T, list string) []console.Document {
+	t.Helper()
+
 	var docs []console.Document
 
 	decoder := json.NewDecoder(bytes.NewReader([]byte(list)))
@@ -28,9 +35,19 @@ func written(t *testing.T, list string) string {
 		t.Fatal(err)
 	}
 
+	return docs
+}
+
+// reported is the series the console's three reports become, written as
+// written does.
+func reported(t *testing.T, devices, clients, health string) string {
+	t.Helper()
+
 	var out strings.Builder
 
-	for _, sample := range unifi.Samples(docs, time.Unix(0, 0)) {
+	for _, sample := range unifi.Series(
+		documents(t, devices), documents(t, clients), documents(t, health), time.Unix(0, 0),
+	) {
 		out.WriteString(sample.Name)
 		out.WriteByte('{')
 
@@ -167,4 +184,93 @@ func TestBothUplinksAreWritten(t *testing.T) {
 		"unifi_wan_availability_percent{device=Gateway,wan=wan2} 62.5",
 	)
 	lacks(t, got, "wan3")
+}
+
+func TestAClientIsCalledByItsNameItsHostNameOrItsAddress(t *testing.T) {
+	t.Parallel()
+
+	got := reported(t, "[]", `[
+		{"mac": "a", "name": "Laptop", "hostname": "laptop-host", "uptime": 1},
+		{"mac": "b", "hostname": "thermostat", "uptime": 2},
+		{"mac": "c", "uptime": 3},
+		{"mac": "d", "name": "Twin", "uptime": 4},
+		{"mac": "e", "hostname": "Twin", "uptime": 5}
+	]`, "[]")
+
+	holds(t, got,
+		"unifi_client_uptime_seconds{client=Laptop} 1",
+		"unifi_client_uptime_seconds{client=thermostat} 2",
+		"unifi_client_uptime_seconds{client=c} 3",
+		// One named Twin and one that calls itself Twin: each by its address.
+		"unifi_client_uptime_seconds{client=d} 4",
+		"unifi_client_uptime_seconds{client=e} 5",
+	)
+	lacks(t, got, "client=Twin", "client=laptop-host")
+}
+
+func TestAWirelessClientAndAWiredOneAreNotMeasuredAlike(t *testing.T) {
+	t.Parallel()
+
+	got := reported(t, "[]", `[
+		{"mac": "a", "name": "Phone", "is_wired": false, "network": "Family", "last_uplink_name": "Attic",
+		 "essid": "Home", "radio": "na", "signal": -52, "noise": -98, "rx_rate": 866000, "tx_rate": 780000,
+		 "wifi_tx_retries_percentage": 2.5, "rx_bytes": 300, "tx_bytes": 4100,
+		 "wired_rate_mbps": 1000, "wired-rx_bytes": 9, "wired-tx_bytes": 9},
+		{"mac": "b", "name": "Desk", "is_wired": true, "network": "Family", "last_uplink_name": "Switch",
+		 "wired_rate_mbps": 1000, "wired-rx_bytes": 520, "wired-tx_bytes": 9100,
+		 "signal": -1, "rx_rate": 1, "wifi_tx_retries_percentage": 0, "rx_bytes": 9, "tx_bytes": 9},
+		{"mac": "c", "name": "Unsaid", "signal": -60}
+	]`, "[]")
+
+	holds(t, got,
+		"unifi_client_info{client=Phone,mac=a,wired=false,essid=Home,network=Family,radio=na,uplink=Attic} 1",
+		"unifi_client_signal_dbm{client=Phone} -52",
+		"unifi_client_noise_dbm{client=Phone} -98",
+		"unifi_client_receive_rate_kbps{client=Phone} 866000",
+		"unifi_client_retries_percent{client=Phone} 2.5",
+		"unifi_client_receive_bytes_total{client=Phone} 300",
+		"unifi_client_transmit_bytes_total{client=Phone} 4100",
+		// What the console does not say of a client is not a label.
+		"unifi_client_info{client=Desk,mac=b,wired=true,network=Family,uplink=Switch} 1",
+		"unifi_client_link_mbps{client=Desk} 1000",
+		"unifi_client_receive_bytes_total{client=Desk} 520",
+		"unifi_client_transmit_bytes_total{client=Desk} 9100",
+		// A client that does not say is wireless, as the console leaves it.
+		"unifi_client_info{client=Unsaid,mac=c,wired=false} 1",
+		"unifi_client_signal_dbm{client=Unsaid} -60",
+	)
+	lacks(t, got,
+		"unifi_client_link_mbps{client=Phone}",
+		"unifi_client_signal_dbm{client=Desk}", "unifi_client_receive_rate_kbps{client=Desk}",
+		"unifi_client_retries_percent{client=Desk}",
+	)
+}
+
+func TestASubsystemsVerdict(t *testing.T) {
+	t.Parallel()
+
+	got := reported(t, "[]", "[]", `[
+		{"subsystem": "wlan", "status": "ok", "num_user": 2, "num_guest": 0, "num_adopted": 1},
+		{"subsystem": "wan", "status": "error", "num_sta": 3, "num_disconnected": 1},
+		{"subsystem": "www", "status": "warning", "latency": 14, "drops": 2, "uptime": 90000},
+		{"subsystem": "vpn", "status": "unknown"},
+		{"subsystem": "lan"}
+	]`)
+
+	holds(t, got,
+		"unifi_health_ok{subsystem=wlan} 1",
+		"unifi_health_users{subsystem=wlan} 2",
+		"unifi_health_guests{subsystem=wlan} 0",
+		"unifi_health_adopted{subsystem=wlan} 1",
+		// Anything said that is not "ok" is not ok.
+		"unifi_health_ok{subsystem=wan} 0",
+		"unifi_health_clients{subsystem=wan} 3",
+		"unifi_health_disconnected{subsystem=wan} 1",
+		"unifi_health_ok{subsystem=www} 0",
+		"unifi_health_latency_milliseconds{subsystem=www} 14",
+		"unifi_health_drops{subsystem=www} 2",
+		"unifi_health_uptime_seconds{subsystem=www} 90000",
+	)
+	// A subsystem the house does not have, and one with no verdict, have none.
+	lacks(t, got, "subsystem=vpn", "subsystem=lan")
 }
