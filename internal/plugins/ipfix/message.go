@@ -102,12 +102,18 @@ type template struct {
 type Reader struct {
 	templates map[scope]*template
 	turn      uint64
+	// names is who an address is, when a plugin of the collector said.
+	names *plugin.Names
 }
 
 // NewReader returns a reader that holds no template yet.
 func NewReader() *Reader {
 	return &Reader{templates: make(map[scope]*template)}
 }
+
+// Name has the reader write who a flow's two addresses are, as names
+// knows them when the flow is read, beside the addresses.
+func (r *Reader) Name(names *plugin.Names) { r.names = names }
 
 // Templates is how many templates the reader holds.
 func (r *Reader) Templates() int { return len(r.templates) }
@@ -344,7 +350,7 @@ func (m *message) data(number uint16, body []byte) error {
 			return ErrTooMany
 		}
 
-		read := flow{fields: make([]plugin.Field, 0, len(layout.fields)+about)}
+		read := flow{fields: make([]plugin.Field, 0, len(layout.fields)+about+named)}
 
 		for _, one := range layout.fields {
 			value, rest, ok := take(body, one.length)
@@ -396,6 +402,16 @@ func take(body []byte, length uint16) (value, rest []byte, ok bool) {
 // what it holds: the exporter, its domain and the template.
 const about = 3
 
+// And two more when its ends are known by name.
+const named = 2
+
+// Who the two ends of a flow are, when a plugin of the collector said: the
+// collector's own names, OpenTelemetry having none for it.
+const (
+	sourceName      = "source.name"
+	destinationName = "destination.name"
+)
+
 // flow is one record being read: its fields, and what of them its text
 // and its time are made of.
 type flow struct {
@@ -408,6 +424,10 @@ type flow struct {
 	destinationPort string
 	octets          string
 	packets         string
+
+	// The two addresses again, as addresses: what a name is asked by.
+	sourceAt      netip.Addr
+	destinationAt netip.Addr
 
 	// ended is when the flow says it ended, observed when the exporter
 	// says it saw what a record with no flow reports.
@@ -443,8 +463,10 @@ func (f *flow) add(one field, value []byte) {
 		f.transport = said
 	case sourceIPv4Address, sourceIPv6Address:
 		f.source = said
+		f.sourceAt, _ = netip.AddrFromSlice(value)
 	case destinationIPv4Address, destinationIPv6Address:
 		f.destination = said
+		f.destinationAt, _ = netip.AddrFromSlice(value)
 	case sourceTransportPort:
 		f.sourcePort = said
 	case destinationTransportPort:
@@ -480,6 +502,17 @@ func (f *flow) record(from *message, number uint16) plugin.Record {
 
 			break
 		}
+	}
+
+	// A name is text someone else chose, a host's own name for one: cut
+	// and cleaned as a string of the exporter's is.
+	for _, side := range [...]struct {
+		name string
+		at   netip.Addr
+	}{{sourceName, f.sourceAt}, {destinationName, f.destinationAt}} {
+		called, _ := text.read([]byte(from.reader.names.Of(side.at, from.received)))
+
+		f.field(side.name, called)
 	}
 
 	f.field(peer, from.exporter.Addr().Unmap().String())

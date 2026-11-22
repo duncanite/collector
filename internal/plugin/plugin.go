@@ -36,6 +36,9 @@ type Output struct {
 	// requests on to the stores, unread.
 	MetricsRelay Relay
 	LogsRelay    Relay
+	// Names is who the collector's plugins have said an address is, the
+	// same for all of them: one tells, another asks.
+	Names *Names
 }
 
 // Relay takes OpenTelemetry requests to one store as they came.

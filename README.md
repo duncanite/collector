@@ -20,9 +20,9 @@ each its settings through that plugin's flags. Nothing here names a host or an a
 | Plugin | Source | Writes |
 |--------|--------|--------|
 | `arris` | An Arris SURFboard cable modem, read every `--arris.interval` over [go-arris](https://github.com/duncanite/go-arris) | Metrics: `arris_up`, the uptime, and per bonded channel its lock, frequency, power, signal-to-noise ratio and codeword error counts |
-| `ipfix` | IPFIX, the flow export a gateway calls NetFlow version 10, received on UDP at `--ipfix.listen` | Logs: one record a flow, its text the flow in a line (`tcp 192.0.2.7:51000 > 198.51.100.9:443 5344385 bytes 5009 packets`), with its addresses, ports and protocol under the names a firewall line has them, every other element under IANA's name as `ipfix.<name>`, and the exporter's address |
+| `ipfix` | IPFIX, the flow export a gateway calls NetFlow version 10, received on UDP at `--ipfix.listen` | Logs: one record a flow, its text the flow in a line (`tcp 192.0.2.7:51000 > 198.51.100.9:443 5344385 bytes 5009 packets`), with its addresses, ports and protocol under the names a firewall line has them, every other element under IANA's name as `ipfix.<name>`, the exporter's address, and who either end is, `source.name` and `destination.name`, when another plugin of the same collector has said |
 | `otlp` | The house's own programs that speak OpenTelemetry, sending OTLP over HTTP to `--otlp.listen` | Whatever they send, unread: `/v1/metrics` to the metrics store and `/v1/logs` to the logs store, and the store's answer back to the sender |
-| `unifi` | A UniFi Network console, asked every `--unifi.interval` over [go-unifi](https://github.com/duncanite/go-unifi) for its devices, its clients and its health | Metrics: `unifi_up`; per device whether the console is in touch with it, its uptime, processor, memory, temperature and clients; per radio of an access point its channel, clients, utilization and retries; per port its link, speed, traffic, errors and power; per uplink to the internet its latency and availability; per client where it is attached, its signal, rate, retries and traffic, or its link's speed when wired (a client that moves to another access point or band is a new `unifi_client_info` series, its measures the same ones); per subsystem of the console its verdict and its counts |
+| `unifi` | A UniFi Network console, asked every `--unifi.interval` over [go-unifi](https://github.com/duncanite/go-unifi) for its devices, its clients and its health | Metrics: `unifi_up`; per device whether the console is in touch with it, its uptime, processor, memory, temperature and clients; per radio of an access point its channel, clients, utilization and retries; per port its link, speed, traffic, errors and power; per uplink to the internet its latency and availability; per client where it is attached, its signal, rate, retries and traffic, or its link's speed when wired (a client that moves to another access point or band is a new `unifi_client_info` series, its measures the same ones); per subsystem of the console its verdict and its counts. It also tells the collector's other plugins who each address the console knows is |
 | `unifi-syslog` | UniFi's remote syslog, received on UDP at `--unifi-syslog.listen`: the gateway, the access points, the switch, and the console's CEF events | Logs: one record a line, with the host, the program and its pid, an access point's model and firmware, a firewall line's rule, policy, addresses and ports, a console event's fields under `cef.*`, and the sender's address |
 
 ```bash
@@ -94,8 +94,18 @@ Not bounded, as for syslog: who sends, how many flows, and what they say, a temp
 another sender defines under an exporter's address and port among it.
 
 Its reader is fuzzed (`FuzzRead`) and reads the worked example of the RFC's appendix A. It
-has not met a gateway's export yet: every message in its tests is written by hand from the
-RFC.
+reads a UniFi gateway's export in one deployment; every message in its tests is written by
+hand from the RFC.
+
+A flow carries addresses and no name. Who an address is comes from another plugin of the
+same collector, when one knows: `unifi` tells, at every read of the console, the address of
+each device and client under the name its series carry, and `ipfix` writes the name beside
+the address, `source.name` and `destination.name`, as it is known when the flow is read.
+Nothing is asked of the network for it, and no reverse lookup is made. A name is told for
+five intervals of the console's reads and no longer, since an address goes to another host
+in time; an address two of the console's clients hold is nobody's; a flow read before the
+first read of the console, or of an address the console does not know, has no name. A name
+is cut and cleaned as any string of the exporter's is: a host chooses its own.
 
 `otlp` reads nothing of what it passes on, keeps nothing and tries nothing again: a request
 the store refuses is answered with the store's own refusal, and a store that is gone with a

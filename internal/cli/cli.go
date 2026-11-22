@@ -111,12 +111,14 @@ type outputs struct {
 	// The same two stores, for what is passed on unread.
 	metricsRelay *victoria.Relay
 	logsRelay    *victoria.Relay
+	// What the plugins tell one another of who an address is.
+	names *plugin.Names
 }
 
 // stores opens the stores whose addresses are given.
 func stores(metricsURL, logsURL string) (outputs, error) {
 	var (
-		out    outputs
+		out    = outputs{names: plugin.NewNames()}
 		err    error
 		client = &http.Client{Transport: network.NewTransport(), Timeout: storeTimeout}
 	)
@@ -147,7 +149,7 @@ func stores(metricsURL, logsURL string) (outputs, error) {
 // output is what one plugin is handed: each store the deployment named,
 // writing under the plugin's name.
 func (out outputs) output(name string) plugin.Output {
-	var handed plugin.Output
+	handed := plugin.Output{Names: out.names}
 
 	// A nil store stays a nil interface: a plugin asks whether it has one.
 	if out.metrics != nil {

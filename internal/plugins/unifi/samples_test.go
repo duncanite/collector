@@ -3,6 +3,7 @@ package unifi_test
 import (
 	"bytes"
 	"encoding/json"
+	"net/netip"
 	"strconv"
 	"strings"
 	"testing"
@@ -273,4 +274,47 @@ func TestASubsystemsVerdict(t *testing.T) {
 	)
 	// A subsystem the house does not have, and one with no verdict, have none.
 	lacks(t, got, "subsystem=vpn", "subsystem=lan")
+}
+
+// TestAnAddressIsCalledWhatItsSeriesAre gives the console's devices and
+// clients addresses: each is told under the name its series carry, and an
+// address that is none, or that two of them hold, is told of nobody.
+func TestAnAddressIsCalledWhatItsSeriesAre(t *testing.T) {
+	t.Parallel()
+
+	got := unifi.Addresses(
+		documents(t, `[
+			{"mac": "01", "name": "Gateway", "ip": "192.0.2.1"},
+			{"mac": "02", "name": "Attic", "ip": "192.0.2.2"}
+		]`),
+		documents(t, `[
+			{"mac": "a", "name": "Laptop", "hostname": "laptop-host", "ip": "192.0.2.7"},
+			{"mac": "b", "hostname": "thermostat", "ip": "::ffff:192.0.2.8"},
+			{"mac": "c", "ip": "2001:db8::9"},
+			{"mac": "d", "name": "Unaddressed"},
+			{"mac": "e", "name": "Nowhere", "ip": "0.0.0.0"},
+			{"mac": "f", "name": "Garbled", "ip": "192.0.2"},
+			{"mac": "g", "name": "Numbered", "ip": 7},
+			{"mac": "h", "name": "Was here", "ip": "192.0.2.20"},
+			{"mac": "i", "name": "Is here", "ip": "192.0.2.20"},
+			{"mac": "j", "name": "On the attic's", "ip": "192.0.2.2"}
+		]`),
+	)
+
+	want := map[string]string{
+		"192.0.2.1":   "Gateway",
+		"192.0.2.7":   "Laptop",
+		"192.0.2.8":   "thermostat",
+		"2001:db8::9": "c",
+	}
+
+	if len(got) != len(want) {
+		t.Errorf("%d addresses are named, want %d: %v", len(got), len(want), got)
+	}
+
+	for address, name := range want {
+		if got[netip.MustParseAddr(address)] != name {
+			t.Errorf("%s is %q, want %q", address, got[netip.MustParseAddr(address)], name)
+		}
+	}
 }
